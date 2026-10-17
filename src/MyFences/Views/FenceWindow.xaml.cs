@@ -38,7 +38,6 @@ public partial class FenceWindow : Window
         ("紫", "#4B2E6B"), ("紅", "#6B2E2E"), ("棕", "#5C4326"),
     };
 
-    private static readonly double[] OpacityPresets = { 0.0, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0 };
     private static readonly (string Name, double Size)[] IconSizePresets = { ("小", 32), ("中", 48), ("大", 64) };
 
     private readonly ObservableCollection<FenceItem> _items = new();
@@ -192,7 +191,7 @@ public partial class FenceWindow : Window
         TitleText.Text = Config.Name;
         IconSize = Config.IconSize;
         CellWidth = Config.IconSize + 36;
-        EmptyHint.Text = IsStandard ? "把桌面上的檔案拖到這裡\n滑鼠移到標題列可以改名、換顏色" : "資料夾是空的";
+        EmptyHint.Text = IsStandard ? "把桌面上的檔案拖進來" : "資料夾是空的";
         AddTabButton.Visibility = IsStandard ? Visibility.Visible : Visibility.Collapsed;
         RollUpButton.Content = Config.RolledUp ? "\uE70D" : "\uE70E";
         RollUpButton.ToolTip = Config.RolledUp ? "展開" : "收合";
@@ -360,8 +359,6 @@ public partial class FenceWindow : Window
         TitleButtons.IsHitTestVisible = show;
     }
 
-    private void OnRenameClick(object sender, RoutedEventArgs e) => BeginRename();
-
     public void BeginRename()
     {
         // 剛建立的分區還沒載入完成時，等載入後再進入改名
@@ -454,11 +451,11 @@ public partial class FenceWindow : Window
                 Margin = new Thickness(0, 0, 6, 6),
                 CornerRadius = new CornerRadius(12),
                 Background = new SolidColorBrush(ThemeHelper.Resolve(color)),
-                BorderBrush = selected ? Brushes.White : new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0xFF, 0xFF)),
                 BorderThickness = new Thickness(selected ? 2.5 : 1),
                 Cursor = Cursors.Hand,
                 ToolTip = name,
             };
+            swatch.SetResourceReference(Border.BorderBrushProperty, selected ? "AccentBrush" : "PanelBorder");
             swatch.MouseLeftButtonUp += (_, _) =>
             {
                 SetColor(color);
@@ -466,6 +463,36 @@ public partial class FenceWindow : Window
             };
             ColorSwatches.Children.Add(swatch);
         }
+
+        // 「＋」：用 Windows 的調色盤自選顏色（目前是自訂色時，就顯示那個顏色並框起來）
+        bool custom = !ColorPresets.Any(c => string.Equals(c.Color, Config.Color, StringComparison.OrdinalIgnoreCase));
+        var plus = new Border
+        {
+            Width = 24,
+            Height = 24,
+            Margin = new Thickness(0, 0, 6, 6),
+            CornerRadius = new CornerRadius(12),
+            Background = custom ? new SolidColorBrush(ThemeHelper.Resolve(Config.Color)) : Brushes.Transparent,
+            BorderThickness = new Thickness(custom ? 2.5 : 1),
+            Cursor = Cursors.Hand,
+            ToolTip = "自選顏色…",
+            Child = new TextBlock
+            {
+                Text = custom ? "" : "\uE710",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 10,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+        plus.SetResourceReference(Border.BorderBrushProperty, custom ? "AccentBrush" : "PanelBorder");
+        ((TextBlock)plus.Child).SetResourceReference(TextBlock.ForegroundProperty, "PanelText");
+        plus.MouseLeftButtonUp += (_, _) =>
+        {
+            AppearancePopup.IsOpen = false;
+            PickCustomColor();
+        };
+        ColorSwatches.Children.Add(plus);
 
         OpacitySlider.Value = Math.Round(Config.Opacity * 100);
         OpacityLabel.Text = $"背景不透明度 {OpacitySlider.Value:0}%";
@@ -479,10 +506,22 @@ public partial class FenceWindow : Window
                 Padding = new Thickness(14, 3, 14, 4),
                 Margin = new Thickness(0, 0, 6, 0),
                 CornerRadius = new CornerRadius(4),
-                Background = selected ? ActiveTabBrush : InactiveTabBrush,
+                BorderThickness = new Thickness(1),
                 Cursor = Cursors.Hand,
-                Child = new TextBlock { Text = name, Foreground = Brushes.White, FontSize = 12 },
+                Child = new TextBlock { Text = name, FontSize = 12 },
             };
+            if (selected)
+            {
+                button.SetResourceReference(Border.BackgroundProperty, "AccentBrush");
+                button.BorderBrush = Brushes.Transparent;
+                ((TextBlock)button.Child).Foreground = Brushes.White;
+            }
+            else
+            {
+                button.Background = Brushes.Transparent;
+                button.SetResourceReference(Border.BorderBrushProperty, "PanelBorder");
+                ((TextBlock)button.Child).SetResourceReference(TextBlock.ForegroundProperty, "PanelText");
+            }
             button.MouseLeftButtonUp += (_, _) =>
             {
                 SetIconSize(size);
@@ -528,8 +567,12 @@ public partial class FenceWindow : Window
 
     // ───────────── 分頁 ─────────────
 
-    private static readonly Brush ActiveTabBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
-    private static readonly Brush InactiveTabBrush = new SolidColorBrush(Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF));
+    // 分頁標籤也跟著分區的明暗配色（用動態資源）
+    private const string ActiveTabBrush = "ButtonPressed";
+    private const string InactiveTabBrush = "ItemHover";
+
+    /// <summary>正在原地改名的分頁（null = 沒有）。</summary>
+    private int? _editingTab;
 
     private void RebuildTabs()
     {
@@ -543,66 +586,145 @@ public partial class FenceWindow : Window
         TabStrip.Visibility = Visibility.Visible;
         _ = Config.CurrentItems; // 修正超出範圍的 ActiveTab
         for (int i = 0; i < Config.Tabs.Count; i++)
-        {
-            int index = i;
-            FenceTab tab = Config.Tabs[i];
-            var header = new Border
-            {
-                Tag = index,
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(8, 2, 8, 3),
-                Margin = new Thickness(0, 0, 4, 2),
-                Background = index == Config.ActiveTab ? ActiveTabBrush : InactiveTabBrush,
-                Cursor = Cursors.Hand,
-                AllowDrop = true,
-                ToolTip = $"{tab.Items.Count} 個項目\n把圖示拖到這裡就能移過來，雙擊可改名",
-                Child = new TextBlock
-                {
-                    Text = tab.Name,
-                    Foreground = Brushes.White,
-                    FontSize = 12,
-                    FontWeight = index == Config.ActiveTab ? FontWeights.SemiBold : FontWeights.Normal,
-                    Effect = (System.Windows.Media.Effects.Effect)FindResource("TextShadow"),
-                },
-            };
-            header.MouseLeftButtonDown += (_, e) =>
-            {
-                if (e.ClickCount == 2)
-                {
-                    RenameTab(index);
-                    e.Handled = true;
-                }
-            };
-            header.MouseLeftButtonUp += (_, e) =>
-            {
-                SwitchTab(index);
-                e.Handled = true;
-            };
-            header.DragOver += (_, e) =>
-            {
-                e.Effects = DropEffectFor(e.Data);
-                e.Handled = true;
-            };
-            header.Drop += (_, e) =>
-            {
-                e.Handled = true;
-                e.Effects = DropEffectFor(e.Data);
-                string[] files = GetDroppedPaths(e.Data, out string? _);
-                if (files.Length > 0)
-                    DropOnTab(index, files);
-            };
-            TabStrip.Children.Add(header);
-        }
+            TabStrip.Children.Add(BuildTabHeader(i));
 
         var add = new Button
         {
             Style = (Style)FindResource("TitleButton"),
             Content = "\uE710",
-            Height = 20,
+            Height = 22,
             ToolTip = "新增分頁",
         };
         add.Click += (_, _) => AddTab();
         TabStrip.Children.Add(add);
+    }
+
+    /// <summary>
+    /// 分頁標籤：點一下切換、雙擊原地改名、滑鼠移上去出現 ✕ 可刪除、可以把圖示拖到上面。
+    /// </summary>
+    private Border BuildTabHeader(int index)
+    {
+        FenceTab tab = Config.Tabs[index];
+        bool active = index == Config.ActiveTab;
+        var header = new Border
+        {
+            Tag = index,
+            CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(8, 2, 4, 3),
+            Margin = new Thickness(0, 0, 4, 3),
+            Cursor = Cursors.Hand,
+            AllowDrop = true,
+            ToolTip = $"{tab.Items.Count} 個項目・雙擊改名・把圖示拖到這裡就能移過來",
+        };
+        header.SetResourceReference(Border.BackgroundProperty, active ? ActiveTabBrush : InactiveTabBrush);
+        var content = new StackPanel { Orientation = Orientation.Horizontal };
+        header.Child = content;
+
+        if (_editingTab == index)
+        {
+            var editor = new TextBox
+            {
+                Text = tab.Name,
+                MinWidth = 60,
+                Padding = new Thickness(2, 0, 2, 0),
+                FontSize = 12,
+                BorderThickness = new Thickness(0, 0, 0, 2),
+                Background = Brushes.Transparent,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            };
+            editor.SetResourceReference(ForegroundProperty, "FenceText");
+            editor.SetResourceReference(TextBox.CaretBrushProperty, "FenceText");
+            editor.SetResourceReference(BorderBrushProperty, "AccentBrush");
+            editor.Loaded += (_, _) =>
+            {
+                Activate();
+                editor.Focus();
+                editor.SelectAll();
+            };
+            editor.KeyDown += (_, e) =>
+            {
+                if (e.Key is Key.Enter or Key.Escape)
+                {
+                    EndTabRename(index, e.Key == Key.Enter ? editor.Text : null);
+                    e.Handled = true;
+                }
+            };
+            editor.LostKeyboardFocus += (_, _) => EndTabRename(index, editor.Text);
+            content.Children.Add(editor);
+            header.Padding = new Thickness(6, 2, 6, 3);
+            return header;
+        }
+
+        var label = new TextBlock
+        {
+            Text = tab.Name,
+            FontSize = 12,
+            FontWeight = active ? FontWeights.SemiBold : FontWeights.Normal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        label.SetResourceReference(TextBlock.ForegroundProperty, "FenceText");
+        label.SetResourceReference(EffectProperty, "TextShadow");
+        content.Children.Add(label);
+
+        // 滑鼠移到標籤上才出現的 ✕
+        var close = new Border
+        {
+            Width = 16,
+            Height = 16,
+            Margin = new Thickness(4, 0, 0, 0),
+            CornerRadius = new CornerRadius(8),
+            Background = Brushes.Transparent,
+            Opacity = 0,
+            ToolTip = "刪除分頁",
+            Child = new TextBlock
+            {
+                Text = "\uE711",
+                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontSize = 8,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+        ((TextBlock)close.Child).SetResourceReference(TextBlock.ForegroundProperty, "FenceText");
+        close.MouseEnter += (_, _) => close.SetResourceReference(Border.BackgroundProperty, "ButtonPressed");
+        close.MouseLeave += (_, _) => close.Background = Brushes.Transparent;
+        close.MouseLeftButtonDown += (_, e) => e.Handled = true; // 不要觸發切換 / 改名
+        close.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            DeleteTab(index);
+        };
+        content.Children.Add(close);
+
+        header.MouseEnter += (_, _) => close.Opacity = 1;
+        header.MouseLeave += (_, _) => close.Opacity = 0;
+        header.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount == 2)
+            {
+                BeginTabRename(index);
+                e.Handled = true;
+            }
+        };
+        header.MouseLeftButtonUp += (_, e) =>
+        {
+            SwitchTab(index);
+            e.Handled = true;
+        };
+        header.DragOver += (_, e) =>
+        {
+            e.Effects = DropEffectFor(e.Data);
+            e.Handled = true;
+        };
+        header.Drop += (_, e) =>
+        {
+            e.Handled = true;
+            e.Effects = DropEffectFor(e.Data);
+            string[] files = GetDroppedPaths(e.Data, out string? _);
+            if (files.Length > 0)
+                DropOnTab(index, files);
+        };
+        return header;
     }
 
     private void SwitchTab(int index)
@@ -630,57 +752,49 @@ public partial class FenceWindow : Window
         App.Current.RequestSave();
     }
 
-    /// <summary>直接新增一個分頁（之後雙擊分頁標籤可以改名）。</summary>
+    /// <summary>新增分頁並直接進入改名。</summary>
     private void AddTab()
     {
         Config.AddTab($"分頁 {Math.Max(2, Config.Tabs.Count + 1)}");
+        _editingTab = Config.ActiveTab;
         ReloadItems();
         App.Current.RequestSave();
     }
 
-    private void RenameTab(int index)
+    private void BeginTabRename(int index)
     {
-        string? name = InputDialog.Ask("重新命名分頁", "分頁名稱：", Config.Tabs[index].Name);
-        if (string.IsNullOrWhiteSpace(name))
+        _editingTab = index;
+        RebuildTabs();
+    }
+
+    /// <summary>結束分頁改名；name 是 null 代表取消。</summary>
+    private void EndTabRename(int index, string? name)
+    {
+        if (_editingTab != index)
             return;
 
-        Config.Tabs[index].Name = name.Trim();
-        RebuildTabs();
-        App.Current.RequestSave();
+        _editingTab = null;
+        if (!string.IsNullOrWhiteSpace(name) && index < Config.Tabs.Count)
+        {
+            Config.Tabs[index].Name = name.Trim();
+            App.Current.RequestSave();
+        }
+
+        // 在 LostFocus / KeyDown 事件裡直接拆掉 TextBox 會出錯，排到之後再重建
+        Dispatcher.InvokeAsync(RebuildTabs);
     }
 
     private void DeleteTab(int index)
     {
         FenceTab tab = Config.Tabs[index];
-        App.Current.PushUndo(tab.Items.Count > 0
-            ? $"已刪除分頁「{tab.Name}」，裡面的 {tab.Items.Count} 個項目移到旁邊的分頁"
-            : $"已刪除分頁「{tab.Name}」");
+        // 設定檔被手動改成只剩一個分頁時，旁邊沒有分頁可以接手
+        FenceTab? neighbour = Config.Tabs.Count > 1 ? Config.Tabs[index > 0 ? index - 1 : 1] : null;
+        App.Current.PushUndo(tab.Items.Count > 0 && neighbour != null
+            ? $"已刪除「{tab.Name}」，{tab.Items.Count} 個項目移到「{neighbour.Name}」"
+            : $"已刪除「{tab.Name}」");
         Config.RemoveTab(index);
         ReloadItems();
         App.Current.RequestSave();
-    }
-
-    private ContextMenu BuildTabMenu(int index)
-    {
-        var menu = new ContextMenu();
-        menu.Items.Add(MakeItem("重新命名分頁…", () => RenameTab(index)));
-        menu.Items.Add(MakeItem("刪除分頁", () => DeleteTab(index)));
-        menu.Items.Add(new Separator());
-        menu.Items.Add(MakeItem("新增分頁…", AddTab));
-        return menu;
-    }
-
-    private int? TabIndexFromSource(object source)
-    {
-        var element = source as DependencyObject;
-        while (element != null && element != TabStrip)
-        {
-            if (element is Border { Tag: int index } border && border.Parent == TabStrip)
-                return index;
-            element = element is Visual ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element);
-        }
-
-        return null;
     }
 
     private void SetupPortalWatcher()
@@ -717,7 +831,11 @@ public partial class FenceWindow : Window
     {
         if (e.ClickCount == 2)
         {
-            ToggleRollUp();
+            // 雙擊名稱 = 改名（跟分頁一樣）；雙擊標題列其他地方 = 收合 / 展開
+            if (TitleText.IsMouseOver)
+                BeginRename();
+            else
+                ToggleRollUp();
             e.Handled = true;
             return;
         }
@@ -829,8 +947,16 @@ public partial class FenceWindow : Window
         if (TitleEditor.IsKeyboardFocusWithin)
             return;
 
+        if (e.OriginalSource is TextBox)
+            return; // 正在改分頁名稱
+
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
-        if (ctrl && e.Key == Key.Z)
+        if (e.Key == Key.F2)
+        {
+            BeginRename();
+            e.Handled = true;
+        }
+        else if (ctrl && e.Key == Key.Z)
         {
             App.Current.Undo();
             e.Handled = true;
@@ -1199,8 +1325,7 @@ public partial class FenceWindow : Window
     private void OnRightButtonUp(object sender, MouseButtonEventArgs e)
     {
         FenceItem? item = ItemFromSource(e.OriginalSource);
-        int? tabIndex = TabIndexFromSource(e.OriginalSource);
-        ContextMenu menu = tabIndex is { } t ? BuildTabMenu(t) : item != null ? BuildItemMenu(item) : BuildFenceMenu();
+        ContextMenu menu = item != null ? BuildItemMenu(item) : BuildFenceMenu();
         menu.PlacementTarget = RootBorder;
         menu.Closed += (_, _) =>
         {
@@ -1230,52 +1355,27 @@ public partial class FenceWindow : Window
             menu.Items.Add(MakeItem(label, () => RemoveItems(selected.Select(i => i.FullPath).ToList())));
         }
 
-        menu.Items.Add(new Separator());
-        menu.Items.Add(MakeItem("分區設定", null, BuildFenceMenu().Items.Cast<object>().ToList()));
         return menu;
     }
 
+    /// <summary>
+    /// 「⋯」與右鍵選單。改名（雙擊名稱）、新增分頁、外觀、收合都有更直接的做法，這裡只放其他地方沒有的動作。
+    /// </summary>
     private ContextMenu BuildFenceMenu()
     {
         var menu = new ContextMenu();
-        menu.Items.Add(MakeItem("重新命名", BeginRename));
-
-        var colors = ColorPresets
-            .Select(c => (object)MakeItem(c.Name, () => SetColor(c.Color), isChecked: string.Equals(Config.Color, c.Color, StringComparison.OrdinalIgnoreCase)))
-            .Append(new Separator())
-            .Append(MakeItem("自訂…", CustomColor))
-            .ToList();
-        menu.Items.Add(MakeItem("顏色", null, colors));
-
-        var opacities = OpacityPresets
-            .Select(o => (object)MakeItem($"{o:P0}", () => SetOpacity(o), isChecked: Math.Abs(Config.Opacity - o) < 0.01))
-            .ToList();
-        menu.Items.Add(MakeItem("背景不透明度", null, opacities));
-
-        var sizes = IconSizePresets
-            .Select(s => (object)MakeItem(s.Name, () => SetIconSize(s.Size), isChecked: Math.Abs(Config.IconSize - s.Size) < 0.5))
-            .ToList();
-        menu.Items.Add(MakeItem("圖示大小", null, sizes));
-        menu.Items.Add(MakeItem("毛玻璃背景", ToggleBlur, isChecked: Config.Blur));
-        menu.Items.Add(MakeItem("平常淡化（滑鼠移上去才清楚）", ToggleFade, isChecked: Config.FadeWhenIdle));
-
-        menu.Items.Add(MakeItem(Config.RolledUp ? "展開" : "收合（雙擊標題列）", ToggleRollUp));
-        menu.Items.Add(new Separator());
-
         if (IsStandard)
         {
-            menu.Items.Add(MakeItem("新增分頁…", AddTab));
-            menu.Items.Add(MakeItem("依名稱排序", SortByName));
             menu.Items.Add(MakeItem("自動整理規則…", EditRules));
-            menu.Items.Add(MakeItem("清除已不存在的項目", RemoveMissingItems));
+            menu.Items.Add(MakeItem("依名稱排序", SortByName));
+            menu.Items.Add(MakeItem("清除失效的項目", RemoveMissingItems));
         }
         else
         {
-            menu.Items.Add(MakeItem("開啟資料夾", () => Process.Start("explorer.exe", $"\"{Config.FolderPath}\"")));
-            menu.Items.Add(MakeItem("變更資料夾…", ChangeFolder));
+            menu.Items.Add(MakeItem("在檔案總管開啟", () => Process.Start("explorer.exe", $"\"{Config.FolderPath}\"")));
+            menu.Items.Add(MakeItem("換一個資料夾…", ChangeFolder));
         }
 
-        menu.Items.Add(new Separator());
         int pageCount = App.Current.Config.PageCount;
         var pages = Enumerable.Range(0, pageCount)
             .Select(p => (object)MakeItem($"第 {p + 1} 頁", () => App.Current.MoveFenceToPage(this, p), isChecked: Config.Page == p))
@@ -1283,8 +1383,9 @@ public partial class FenceWindow : Window
             .Append(MakeItem("新的一頁", () => App.Current.MoveFenceToPage(this, pageCount)))
             .ToList();
         menu.Items.Add(MakeItem("移到桌面頁面", null, pages));
-        menu.Items.Add(MakeItem("新增分區", () => App.Current.CreateFence(FenceKind.Standard)));
-        menu.Items.Add(MakeItem("刪除此分區", Delete));
+
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MakeItem("刪除這個分區", Delete));
         menu.Items.Add(new Separator());
         menu.Items.Add(MakeItem("MyFences 設定…", () => SettingsWindow.ShowFor(App.Current)));
         return menu;
@@ -1319,8 +1420,8 @@ public partial class FenceWindow : Window
             return;
 
         App.Current.PushUndo(paths.Count == 1
-            ? $"已把「{FenceItem.Create(paths.First()).DisplayName}」移出分區"
-            : $"已把 {paths.Count} 個項目移出分區");
+            ? $"「{FenceItem.Create(paths.First()).DisplayName}」已放回桌面"
+            : $"{paths.Count} 個項目已放回桌面");
         foreach (List<string> items in Config.AllItemLists())
             items.RemoveAll(p => paths.Any(path => App.PathEquals(p, path)));
         ReloadItems();
@@ -1334,23 +1435,20 @@ public partial class FenceWindow : Window
         App.Current.RequestSave();
     }
 
-    private void CustomColor()
+    /// <summary>用 Windows 內建的調色盤選顏色。</summary>
+    private void PickCustomColor()
     {
-        string? color = InputDialog.Ask("自訂顏色", "輸入色碼（例如 #335577）：", Config.Color);
-        if (string.IsNullOrWhiteSpace(color))
+        Color current = ThemeHelper.Resolve(Config.Color);
+        using var dialog = new System.Windows.Forms.ColorDialog
+        {
+            FullOpen = true,
+            Color = System.Drawing.Color.FromArgb(current.R, current.G, current.B),
+        };
+        if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
             return;
 
-        try
-        {
-            ColorConverter.ConvertFromString(color.Trim());
-        }
-        catch (FormatException)
-        {
-            MessageBox.Show("色碼格式不正確。", "MyFences");
-            return;
-        }
-
-        SetColor(color.Trim());
+        System.Drawing.Color c = dialog.Color;
+        SetColor($"#{c.R:X2}{c.G:X2}{c.B:X2}");
     }
 
     private void ToggleBlur()
@@ -1405,7 +1503,7 @@ public partial class FenceWindow : Window
 
         // 有放入項目時 SortDesktop 會自己顯示附「復原」的提示
         if (App.Current.SortDesktop() == 0)
-            Toast.ShowMessage("規則已儲存，桌面上目前沒有新的符合項目。");
+            Toast.ShowMessage("規則已儲存");
     }
 
     private void RemoveMissingItems()
@@ -1414,11 +1512,11 @@ public partial class FenceWindow : Window
         int count = Config.AllItemLists().Sum(items => items.Count(Missing));
         if (count == 0)
         {
-            Toast.ShowMessage("沒有找不到的項目。");
+            Toast.ShowMessage("所有項目都還在，沒有需要清除的");
             return;
         }
 
-        App.Current.PushUndo($"已清除 {count} 個找不到的項目");
+        App.Current.PushUndo($"已清除 {count} 個找不到檔案的項目");
         foreach (List<string> items in Config.AllItemLists())
             items.RemoveAll(Missing);
         ReloadItems();

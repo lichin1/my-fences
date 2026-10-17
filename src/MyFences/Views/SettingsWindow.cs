@@ -117,7 +117,7 @@ internal sealed class SettingsWindow : Window
         buttons.Children.Add(Action("現在依規則整理桌面", () =>
         {
             if (_app.SortDesktop() == 0)
-                Toast.ShowMessage("桌面上沒有符合規則的新項目。");
+                Toast.ShowMessage("桌面已經很整齊了，沒有要整理的項目");
         }, primary: true));
         panel.Children.Add(buttons);
 
@@ -186,11 +186,14 @@ internal sealed class SettingsWindow : Window
         panel.Children.Add(intro);
 
         var buttons = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-        buttons.Children.Add(Action("建立快照…", () =>
+        buttons.Children.Add(Action("建立快照", () =>
         {
-            string? name = InputDialog.Ask("建立快照", "快照名稱：", DateTime.Now.ToString("yyyy/MM/dd HH:mm"));
-            if (name != null && _app.CreateSnapshot(name.Trim(), SnapshotKind.Manual) != null)
+            // 不用先想名稱：以時間命名，直接建立
+            if (_app.CreateSnapshot("手動快照", SnapshotKind.Manual) != null)
+            {
                 RefreshSnapshots();
+                Toast.ShowMessage("已建立快照");
+            }
         }, primary: true));
         buttons.Children.Add(Action("還原選取的快照", () =>
         {
@@ -282,15 +285,17 @@ internal sealed class SettingsWindow : Window
             ("Ctrl + Alt + ← / →", "切換桌面頁面"));
         Section("分區",
             ("拖曳標題列", "移動（會自動對齊，按住 Alt 暫時不對齊）"),
-            ("雙擊標題列", "收合 / 展開"),
-            ("滑鼠移到標題列", "出現改名、新增分頁、外觀、收合、更多設定按鈕"));
+            ("雙擊名稱", "直接改名（F2 也可以）"),
+            ("雙擊標題列空白處", "收合 / 展開"),
+            ("滑鼠移到標題列", "出現新增分頁、外觀、收合、更多設定按鈕"));
         Section("圖示",
             ("把檔案拖進分區", "放進分區，桌面上的圖示會隱藏"),
             ("把圖示拖回桌面", "移出分區，桌面上的圖示會重新出現"),
             ("Ctrl / Shift + 點選、拖框框選", "一次選很多個，可以一起拖"),
             ("Delete", "把選取的圖示移出分區"),
             ("Ctrl + Z", "復原上一個動作（也可以按右下角提示的「復原」）"),
-            ("雙擊分頁標籤", "改分頁名稱"));
+            ("雙擊分頁標籤", "直接改分頁名稱"),
+            ("滑鼠移到分頁標籤上", "出現 ✕，點一下刪除分頁"));
         return Scroll(panel);
     }
 

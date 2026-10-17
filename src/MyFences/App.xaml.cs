@@ -209,7 +209,7 @@ public partial class App : Application
     public void DeleteFence(FenceWindow window)
     {
         // 分區裡的檔案會放回桌面（取消隱藏）
-        PushUndo($"已刪除分區「{window.Config.Name}」，裡面的檔案放回桌面");
+        PushUndo($"已刪除「{window.Config.Name}」，裡面的檔案都放回桌面了");
         Config.Fences.Remove(window.Config);
         _windows.Remove(window);
         window.CloseIntentionally();
@@ -364,7 +364,7 @@ public partial class App : Application
         string undoState = SerializeFences();
         int count = ApplyRules(DesktopHelper.EnumerateDesktopItems());
         if (count > 0)
-            PushUndo($"已把 {count} 個桌面項目整理進分區", undoState);
+            PushUndo($"已整理 {count} 個桌面項目", undoState);
         return count;
     }
 
@@ -387,7 +387,7 @@ public partial class App : Application
         if (CreateSnapshot("還原快照前自動備份", SnapshotKind.Backup) == null)
             return;
 
-        PushUndo($"已還原快照「{snapshot.Name}」");
+        PushUndo($"已還原到「{snapshot.Name}」");
         ReplaceFences(snapshot.Fences);
     }
 
@@ -432,7 +432,7 @@ public partial class App : Application
     {
         if (_undoStack.Count == 0)
         {
-            Toast.ShowMessage("沒有可以復原的動作。");
+            Toast.ShowMessage("沒有可以復原的動作");
             return;
         }
 
@@ -443,7 +443,7 @@ public partial class App : Application
             return;
 
         ReplaceFences(fences);
-        Toast.ShowMessage("已復原：" + message);
+        Toast.ShowMessage("已復原");
     }
 
     /// <summary>把還沒在任何分區裡的項目，依各分區的規則放進去。回傳放入的數量。</summary>

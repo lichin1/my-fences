@@ -22,7 +22,7 @@ internal sealed class TrayIcon : IDisposable
         {
             // 有放入項目時會顯示附「復原」的提示
             if (app.SortDesktop() == 0)
-                Views.Toast.ShowMessage("桌面上沒有符合規則的新項目。");
+                Views.Toast.ShowMessage("桌面已經很整齊了，沒有要整理的項目");
         });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("顯示 / 隱藏所有分區\tCtrl+Alt+F", null, (_, _) => app.ToggleFences());

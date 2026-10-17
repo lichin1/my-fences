@@ -128,19 +128,23 @@
                                FontSize="13"
                                FontWeight="SemiBold"
                                TextTrimming="CharacterEllipsis"
-                               ToolTip="拖曳移動｜雙擊收合 / 展開"
+                               ToolTip="雙擊名稱可以改名"
                                Effect="{DynamicResource TextShadow}" />
 
                     <!-- 直接在標題列改名 -->
                     <TextBox x:Name="TitleEditor"
                              Visibility="Collapsed"
-                             Margin="6,3,140,3"
-                             Padding="4,0"
+                             Margin="10,4,124,4"
+                             Padding="2,0"
                              VerticalContentAlignment="Center"
                              FontSize="13"
-                             Background="#F0FFFFFF"
-                             Foreground="Black"
-                             BorderThickness="0"
+                             FontWeight="SemiBold"
+                             Background="Transparent"
+                             Foreground="{DynamicResource FenceText}"
+                             CaretBrush="{DynamicResource FenceText}"
+                             SelectionBrush="{DynamicResource AccentBrush}"
+                             BorderBrush="{DynamicResource AccentBrush}"
+                             BorderThickness="0,0,0,2"
                              KeyDown="OnTitleEditorKeyDown"
                              LostKeyboardFocus="OnTitleEditorLostFocus" />
 
@@ -151,7 +155,6 @@
                                 Margin="0,0,3,0"
                                 Opacity="0"
                                 IsHitTestVisible="False">
-                        <Button x:Name="RenameButton" Style="{StaticResource TitleButton}" Content="&#xE70F;" ToolTip="改名" Click="OnRenameClick" />
                         <Button x:Name="AddTabButton" Style="{StaticResource TitleButton}" Content="&#xE710;" ToolTip="新增分頁" Click="OnAddTabClick" />
                         <Button x:Name="AppearanceButton" Style="{StaticResource TitleButton}" Content="&#xE790;" ToolTip="顏色與外觀" Click="OnAppearanceClick" />
                         <Button x:Name="RollUpButton" Style="{StaticResource TitleButton}" Content="&#xE70E;" ToolTip="收合" Click="OnRollUpClick" />
