@@ -77,93 +77,8 @@ public partial class FenceWindow : Window
             if (IsMouseOver)
                 ExpandTemporarily();
         };
-        LocationChanged += (_, _) => OnGeometryChanged();
-        SizeChanged += (_, _) => OnGeometryChanged();
-        IsVisibleChanged += (_, _) => OnGeometryChanged();
-    }
-
-    // ───────────── 一般分區：收納真正的桌面圖示 ─────────────
-
-    /// <summary>分區四周保留可以拖曳縮放的邊（WPF 單位）；中間是透明的，滑鼠會點到底下的桌面圖示。</summary>
-    private const double ResizeRing = 6;
-
-    private readonly FenceBackdrop _backdrop = new();
-
-    /// <summary>一般分區目前有沒有在顯示圖示（收合、其他頁面、隱藏時就沒有）。</summary>
-    public bool IconsVisible => IsStandard && IsVisible && (!Config.RolledUp || _hoverExpanded);
-
-    /// <summary>放圖示的區域（螢幕像素）：整個分區扣掉標題列、分頁列和四周的邊。</summary>
-    public PixelRect? GetBodyPixelRect()
-    {
-        if (GetPixelBounds() is not { } r)
-            return null;
-
-        double scale = DpiScale();
-        int header = (int)Math.Round(HeaderHeight() * scale);
-        int ring = (int)Math.Round(ResizeRing * scale);
-        var body = new PixelRect(r.X + ring, r.Y + header, r.Width - 2 * ring, r.Height - header - ring);
-        return body.Width > 0 && body.Height > 0 ? body : null;
-    }
-
-    /// <summary>圖示放不下時把分區拉長；有拉長就回傳 true。</summary>
-    public bool EnsureBodyHeight(int requiredPixels)
-    {
-        if (Config.RolledUp && !_hoverExpanded || GetBodyPixelRect() is not { } body || body.Height >= requiredPixels)
-            return false;
-
-        Height += (requiredPixels - body.Height) / DpiScale();
-        UpdateLayout();
-        if (!_hoverExpanded)
-            Config.Height = Height;
-        return true;
-    }
-
-    public void RefreshEmptyHint()
-    {
-        if (!IsStandard)
-            return;
-
-        EmptyHint.Visibility = Config.CurrentItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private double DpiScale()
-    {
-        double scale = VisualTreeHelper.GetDpi(this).DpiScaleY;
-        return scale > 0 ? scale : 1;
-    }
-
-    /// <summary>標題列 + 分頁列 + 上框線的高度（WPF 單位）。</summary>
-    private double HeaderHeight()
-    {
-        double title = TitleBar.ActualHeight > 0 ? TitleBar.ActualHeight : 30;
-        double tabs = TabStrip.Visibility == Visibility.Visible
-            ? TabStrip.ActualHeight + TabStrip.Margin.Top + TabStrip.Margin.Bottom
-            : 0;
-        return 1 + title + tabs;
-    }
-
-    /// <summary>位置、大小、顯示狀態變了：存檔、移動底色、重新排列圖示。</summary>
-    private void OnGeometryChanged()
-    {
-        SaveBounds();
-        UpdateBackdrop();
-        if (IsStandard)
-            App.Current.Icons?.RequestLayout();
-    }
-
-    /// <summary>底色畫在桌面圖示後面，範圍是標題列以下的整塊。</summary>
-    private void UpdateBackdrop()
-    {
-        if (!IconsVisible || GetPixelBounds() is not { } r)
-        {
-            _backdrop.Hide();
-            return;
-        }
-
-        double scale = DpiScale();
-        int header = (int)Math.Round(HeaderHeight() * scale);
-        var area = new PixelRect(r.X, r.Y + header, r.Width, r.Height - header);
-        _backdrop.Update(area, ThemeHelper.Resolve(Config.Color), Config.Opacity, (int)Math.Round(8 * scale));
+        LocationChanged += (_, _) => SaveBounds();
+        SizeChanged += (_, _) => SaveBounds();
     }
 
     public FenceConfig Config { get; }
@@ -244,23 +159,9 @@ public partial class FenceWindow : Window
         // alpha 至少 1：完全透明的像素會讓滑鼠點擊穿透到桌面
         byte bodyAlpha = (byte)Math.Clamp(Config.Opacity * 255, 1, 255);
         byte titleAlpha = (byte)Math.Clamp(Config.Opacity * 255 + 50, 70, 255);
+        RootBorder.Background = new SolidColorBrush(Color.FromArgb(bodyAlpha, baseColor.R, baseColor.G, baseColor.B));
         TitleBar.Background = new SolidColorBrush(Color.FromArgb(titleAlpha, baseColor.R, baseColor.G, baseColor.B));
-        if (IsStandard)
-        {
-            // 中間完全透明（alpha 0）= 滑鼠點得到底下真正的桌面圖示；底色由桌面圖示後面的 FenceBackdrop 畫。
-            // 四周留一圈 alpha 1 的邊，才抓得到滑鼠來縮放分區。
-            RootBorder.Background = Brushes.Transparent;
-            RootBorder.BorderThickness = new Thickness(ResizeRing, 1, ResizeRing, ResizeRing);
-            RootBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(1, baseColor.R, baseColor.G, baseColor.B));
-            ItemsList.Visibility = Visibility.Collapsed;
-        }
-        else
-        {
-            RootBorder.Background = new SolidColorBrush(Color.FromArgb(bodyAlpha, baseColor.R, baseColor.G, baseColor.B));
-            RootBorder.BorderThickness = new Thickness(1);
-            RootBorder.BorderBrush = Brush(lightBackground ? 0x30000000u : 0x40FFFFFFu);
-            ItemsList.Visibility = Visibility.Visible;
-        }
+        RootBorder.BorderBrush = Brush(lightBackground ? 0x30000000u : 0x40FFFFFFu);
 
         // 淺色背景用深色字（白色光暈），深色背景用白字（黑色陰影）
         Resources["FenceText"] = lightBackground ? Brush(0xFF1B1B1Bu) : Brushes.White;
@@ -290,7 +191,7 @@ public partial class FenceWindow : Window
         TitleText.Text = Config.Name;
         IconSize = Config.IconSize;
         CellWidth = Config.IconSize + 36;
-        EmptyHint.Text = IsStandard ? "把桌面圖示拖進來" : "資料夾是空的";
+        EmptyHint.Text = IsStandard ? "把桌面上的檔案拖進來" : "資料夾是空的";
         AddTabButton.Visibility = IsStandard ? Visibility.Visible : Visibility.Collapsed;
         RollUpButton.Content = Config.RolledUp ? "\uE70D" : "\uE70E";
         RollUpButton.ToolTip = Config.RolledUp ? "展開" : "收合";
@@ -317,18 +218,10 @@ public partial class FenceWindow : Window
     {
         _items.Clear();
 
-        if (IsStandard)
-        {
-            // 一般分區裡是真正的桌面圖示（由 DesktopIconManager 排列），這裡只更新分頁與提示
-            RebuildTabs();
-            RefreshEmptyHint();
-            UpdateBackdrop();
-            App.Current.Icons?.RequestLayout();
-            return;
-        }
-
         List<string> paths;
-        if (Config.FolderPath is { } folder && Directory.Exists(folder))
+        if (IsStandard)
+            paths = Config.CurrentItems.ToList();
+        else if (Config.FolderPath is { } folder && Directory.Exists(folder))
             paths = DesktopHelper.EnumerateVisibleEntries(folder);
         else
             paths = new List<string>();
@@ -362,7 +255,6 @@ public partial class FenceWindow : Window
     {
         _portalWatcher?.Dispose();
         _portalReloadTimer.Stop();
-        _backdrop.Dispose();
         base.OnClosed(e);
     }
 
@@ -379,7 +271,15 @@ public partial class FenceWindow : Window
             SnapGuides.Hide();
 
         if (msg == WM_WINDOWPOSCHANGING)
-            DesktopHelper.KeepJustAboveDesktopIcons(hwnd, lParam); // 桌面圖示之上、一般視窗之下
+        {
+            // 不管被誰啟動，都維持在最下層（桌面圖示之上、一般視窗之下）
+            var pos = Marshal.PtrToStructure<WINDOWPOS>(lParam);
+            if ((pos.flags & SWP_NOZORDER) == 0)
+            {
+                pos.hwndInsertAfter = HWND_BOTTOM;
+                Marshal.StructureToPtr(pos, lParam, false);
+            }
+        }
 
         return IntPtr.Zero;
     }
@@ -439,7 +339,7 @@ public partial class FenceWindow : Window
     private void UpdateFade(bool animate = true)
     {
         bool menuOpen = RootBorder.ContextMenu?.IsOpen == true;
-        double target = Config.FadeWhenIdle && !IsMouseOver && !CursorInside() && !menuOpen ? 0.3 : 1.0;
+        double target = Config.FadeWhenIdle && !IsMouseOver && !menuOpen ? 0.3 : 1.0;
         if (!animate)
         {
             BeginAnimation(OpacityProperty, null);
@@ -864,7 +764,7 @@ public partial class FenceWindow : Window
             }
 
             e.Effects = DropEffectFor(e.Data);
-            string[] files = FilterDesktopItems(GetDroppedPaths(e.Data, out string? _));
+            string[] files = GetDroppedPaths(e.Data, out string? _);
             if (files.Length > 0)
                 DropOnTab(index, files);
         };
@@ -1113,41 +1013,13 @@ public partial class FenceWindow : Window
     {
         _hoverExpandTimer.Stop();
         UpdateTitleButtons();
-        // 一般分區中間是透明的，滑鼠移到圖示上也算「離開視窗」；
-        // 所以等游標真的離開分區範圍才收回 / 淡化
-        _leaveWatch.Stop();
-        _leaveWatch.Start();
+        UpdateFade();
+        if (!_hoverExpanded || ItemsList.ContextMenu?.IsOpen == true || RootBorder.ContextMenu?.IsOpen == true)
+            return;
+
+        _hoverExpanded = false;
+        Height = RolledUpHeight;
     }
-
-    private DispatcherTimer? _leaveWatchTimer;
-
-    private DispatcherTimer _leaveWatch
-    {
-        get
-        {
-            if (_leaveWatchTimer != null)
-                return _leaveWatchTimer;
-
-            _leaveWatchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            _leaveWatchTimer.Tick += (_, _) =>
-            {
-                if (IsMouseOver || CursorInside() || RootBorder.ContextMenu?.IsOpen == true || AppearancePopup.IsOpen)
-                    return;
-
-                _leaveWatchTimer.Stop();
-                UpdateFade();
-                if (_hoverExpanded)
-                {
-                    _hoverExpanded = false;
-                    Height = RolledUpHeight;
-                }
-            };
-            return _leaveWatchTimer;
-        }
-    }
-
-    private bool CursorInside() =>
-        GetCursorPos(out POINT pt) && GetPixelBounds() is { } r && r.Contains(pt.x, pt.y);
 
     /// <summary>收合中的分區，滑鼠移上去（或拖檔案進來）時暫時展開。</summary>
     private void ExpandTemporarily()
@@ -1428,18 +1300,6 @@ public partial class FenceWindow : Window
             : Array.Empty<string>();
     }
 
-    /// <summary>
-    /// 一般分區收納的是真正的桌面圖示，只能放桌面上的檔案；其他資料夾的檔案請先拖到桌面上
-    /// （拖到分區中間就會直接落在桌面上，並自動加入這個分區）。
-    /// </summary>
-    private static string[] FilterDesktopItems(string[] paths)
-    {
-        string[] onDesktop = paths.Where(DesktopHelper.IsOnDesktop).ToArray();
-        if (onDesktop.Length < paths.Length)
-            Toast.ShowMessage("只有桌面上的檔案可以放進分區。從其他資料夾拖過來時，請放在分區的中間。");
-        return onDesktop;
-    }
-
     private static DragDropEffects DropEffectFor(IDataObject data) =>
         data.GetDataPresent(InternalDragFormat) ? DragDropEffects.Move
         // 從桌面 / 檔案總管拖來時回報 Link 而非 Move，檔案總管就不會刪掉原始檔
@@ -1527,7 +1387,7 @@ public partial class FenceWindow : Window
         e.Handled = true;
         int index = GetDropIndex(e);
         SetDropHighlight(false);
-        string[] files = FilterDesktopItems(GetDroppedPaths(e.Data, out string? sourceFenceId));
+        string[] files = GetDroppedPaths(e.Data, out string? sourceFenceId);
         if (!IsStandard || files.Length == 0)
             return;
 

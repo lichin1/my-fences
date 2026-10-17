@@ -1,13 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using static MyFences.Services.NativeMethods;
 
 namespace MyFences.Services;
 
 internal static class DesktopHelper
 {
+    private const int ToggleDesktopIconsCommand = 0x7402;
+
     public static IntPtr GetProgman() => FindWindow("Progman", null);
 
     /// <summary>
@@ -26,7 +27,40 @@ internal static class DesktopHelper
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
-    /// <summary>設定 / 取消隱藏屬性（只用來還原舊版本藏起來的檔案）。失敗回傳 false。</summary>
+    public static bool AreDesktopIconsVisible()
+    {
+        IntPtr defView = GetDefView();
+        if (defView == IntPtr.Zero)
+            return true;
+
+        IntPtr listView = FindWindowEx(defView, IntPtr.Zero, "SysListView32", null);
+        return listView != IntPtr.Zero && IsWindowVisible(listView);
+    }
+
+    /// <summary>等同在桌面右鍵 →「檢視」→「顯示桌面圖示」。</summary>
+    public static void SetDesktopIconsVisible(bool visible)
+    {
+        if (AreDesktopIconsVisible() == visible)
+            return;
+
+        IntPtr defView = GetDefView();
+        if (defView != IntPtr.Zero)
+            SendMessage(defView, WM_COMMAND, new IntPtr(ToggleDesktopIconsCommand), IntPtr.Zero);
+    }
+
+    public static bool IsHidden(string path)
+    {
+        try
+        {
+            return (File.GetAttributes(path) & FileAttributes.Hidden) != 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>設定 / 取消隱藏屬性（檔案和資料夾都可以）。失敗回傳 false。</summary>
     public static bool TrySetHidden(string path, bool hidden)
     {
         try
@@ -126,85 +160,6 @@ internal static class DesktopHelper
         files.Sort((a, b) => comparer.Compare(Path.GetFileName(a), Path.GetFileName(b)));
         dirs.AddRange(files);
         return dirs;
-    }
-
-    /// <summary>
-    /// 在 WM_WINDOWPOSCHANGING 裡呼叫：讓視窗排在「桌面圖示那一層」的正上方
-    /// （一般視窗之下、桌面圖示之上），不管被誰啟動都不會跑到前面。
-    /// </summary>
-    public static void KeepJustAboveDesktopIcons(IntPtr hwnd, IntPtr lParam)
-    {
-        var pos = System.Runtime.InteropServices.Marshal.PtrToStructure<WINDOWPOS>(lParam);
-        if ((pos.flags & SWP_NOZORDER) != 0)
-            return;
-
-        IntPtr host = GetIconHost();
-        if (host == IntPtr.Zero || host == GetProgman())
-        {
-            // 桌面圖示在 Progman 裡：擁有者是 Progman 的視窗最低只會到 Progman 上面，正好在圖示之上
-            pos.hwndInsertAfter = HWND_BOTTOM;
-        }
-        else
-        {
-            // 桌面圖示在另一個最上層 WorkerW 裡：插在它的正上方
-            IntPtr above = GetWindow(host, GW_HWNDPREV);
-            if (above == hwnd)
-                pos.flags |= SWP_NOZORDER;
-            else
-                pos.hwndInsertAfter = above; // Zero = HWND_TOP（WorkerW 已經是最上面）
-        }
-
-        System.Runtime.InteropServices.Marshal.StructureToPtr(pos, lParam, false);
-    }
-
-    /// <summary>檔案是不是直接放在桌面上（個人桌面或公用桌面，不含子資料夾）。</summary>
-    public static bool IsOnDesktop(string path)
-    {
-        string? parent = Path.GetDirectoryName(path.TrimEnd(Path.DirectorySeparatorChar));
-        return parent != null && GetDesktopDirectories().Any(d =>
-            string.Equals(d.TrimEnd(Path.DirectorySeparatorChar), parent.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>桌面圖示的 ListView（SysListView32）。</summary>
-    public static IntPtr GetDesktopListView()
-    {
-        IntPtr defView = GetDefView();
-        return defView == IntPtr.Zero ? IntPtr.Zero : FindWindowEx(defView, IntPtr.Zero, "SysListView32", null);
-    }
-
-    /// <summary>裝著桌面圖示（SHELLDLL_DefView）的那個最上層視窗：Progman 或某個 WorkerW。</summary>
-    public static IntPtr GetIconHost()
-    {
-        IntPtr defView = GetDefView();
-        return defView == IntPtr.Zero ? IntPtr.Zero : GetParent(defView);
-    }
-
-    /// <summary>
-    /// 取得「桌布層」視窗：畫在桌面圖示後面、桌布前面（動態桌布軟體也是放在這裡）。
-    /// 先請 Progman 產生這個 WorkerW（0x052C 訊息），再依 Windows 版本找出來。找不到回傳 Zero。
-    /// </summary>
-    public static IntPtr GetWallpaperLayer()
-    {
-        IntPtr progman = GetProgman();
-        if (progman == IntPtr.Zero)
-            return IntPtr.Zero;
-
-        SendMessageTimeout(progman, 0x052C, new IntPtr(0xD), new IntPtr(1), 0 /* SMTO_NORMAL */, 1000, out _);
-
-        // Windows 11 24H2 之後：WorkerW 是 Progman 的子視窗，排在桌面圖示後面
-        IntPtr child = FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
-        if (child != IntPtr.Zero)
-            return child;
-
-        // 之前的版本：桌面圖示搬到一個最上層 WorkerW，桌布層是它後面的下一個 WorkerW
-        IntPtr worker = IntPtr.Zero;
-        while ((worker = FindWindowEx(IntPtr.Zero, worker, "WorkerW", null)) != IntPtr.Zero)
-        {
-            if (FindWindowEx(worker, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero)
-                return FindWindowEx(IntPtr.Zero, worker, "WorkerW", null);
-        }
-
-        return IntPtr.Zero;
     }
 
     private static IntPtr GetDefView()

@@ -112,7 +112,15 @@ internal sealed class PagerBar : Window
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg == WM_WINDOWPOSCHANGING)
-            DesktopHelper.KeepJustAboveDesktopIcons(hwnd, lParam); // 跟分區一樣在桌面圖示那一層的正上方
+        {
+            // 跟分區一樣永遠在最下層
+            var pos = Marshal.PtrToStructure<WINDOWPOS>(lParam);
+            if ((pos.flags & SWP_NOZORDER) == 0)
+            {
+                pos.hwndInsertAfter = HWND_BOTTOM;
+                Marshal.StructureToPtr(pos, lParam, false);
+            }
+        }
 
         return IntPtr.Zero;
     }

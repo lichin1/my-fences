@@ -72,22 +72,12 @@ internal sealed class SettingsWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(Header("桌面"));
-        panel.Children.Add(new TextBlock
-        {
-            Text = "分區裡放的是真正的桌面圖示，檔案不會被修改。MyFences 執行時會關掉桌面的「自動排列圖示」和「對齊格線」，結束時還原。",
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = Brushes.DimGray,
-            Margin = new Thickness(0, 0, 0, 6),
-        });
+        panel.Children.Add(Toggle("放進分區的檔案從桌面上隱藏（拿出分區或結束 MyFences 時會還原）",
+            () => _app.Config.HideFencedDesktopIcons, v => _app.SetHideFencedDesktopIcons(v)));
         panel.Children.Add(Toggle("雙擊桌面空白處，隱藏 / 顯示所有分區",
             () => _app.Config.QuickHideEnabled, v => _app.SetQuickHide(v)));
-        var rescue = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-        rescue.Children.Add(Action("找回跑到螢幕外的圖示", () =>
-        {
-            int count = _app.RescueIcons();
-            Toast.ShowMessage(count > 0 ? $"找回 {count} 個圖示，放在桌面空位上" : "所有圖示都在畫面上");
-        }));
-        panel.Children.Add(rescue);
+        panel.Children.Add(Toggle("隱藏所有系統桌面圖示（桌面只剩分區）",
+            () => !DesktopHelper.AreDesktopIconsVisible(), v => DesktopHelper.SetDesktopIconsVisible(!v)));
 
         panel.Children.Add(Header("分區"));
         panel.Children.Add(Toggle("桌面出現新檔案時，自動依規則放進分區",
@@ -301,11 +291,11 @@ internal sealed class SettingsWindow : Window
             ("滑鼠移到標題列", "出現新增分頁、外觀、收合、更多設定按鈕"),
             ("把資料夾拖到標題列", "空的分區直接變成資料夾分區；有東西的分區會在旁邊另外建一個"));
         Section("圖示",
-            ("把桌面圖示拖進分區", "加入分區，會自動排整齊；放不下時分區會自動長高"),
-            ("把圖示拖出分區", "移出分區，變回一般的桌面圖示"),
-            ("在分區裡拖動圖示", "調整順序"),
-            ("雙擊、右鍵、多選", "就是 Windows 桌面原本的操作（分區裡是真正的桌面圖示）"),
-            ("Ctrl + Z", "復原刪除分區 / 分頁、整理桌面、還原快照（也可以按右下角提示的「復原」）"),
+            ("把檔案拖進分區", "放進分區，桌面上的圖示會隱藏"),
+            ("把圖示拖回桌面", "移出分區，桌面上的圖示會重新出現"),
+            ("Ctrl / Shift + 點選、拖框框選", "一次選很多個，可以一起拖"),
+            ("Delete", "把選取的圖示移出分區"),
+            ("Ctrl + Z", "復原上一個動作（也可以按右下角提示的「復原」）"),
             ("雙擊分頁標籤", "直接改分頁名稱"),
             ("滑鼠移到分頁標籤上", "出現 ✕，點一下刪除分頁"),
             ("拖曳分頁標籤", "調整分頁順序"));
