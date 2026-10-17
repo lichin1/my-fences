@@ -19,10 +19,7 @@ public sealed class AppConfig
     /// <summary>第一次觸發雙擊隱藏時提示過了沒。</summary>
     public bool QuickHideHintShown { get; set; }
 
-    /// <summary>放進分區的桌面檔案，從桌面上隱藏（設成隱藏屬性）。</summary>
-    public bool HideFencedDesktopIcons { get; set; } = true;
-
-    /// <summary>由 MyFences 設成隱藏的桌面檔案（只會還原這些，不碰使用者自己隱藏的檔案）。</summary>
+    /// <summary>舊版本設成隱藏的桌面檔案；新版本啟動時會全部還原並清空（只為了升級用）。</summary>
     public List<string> HiddenDesktopItems { get; set; } = new();
 
     /// <summary>桌面頁數（至少 1）。</summary>
