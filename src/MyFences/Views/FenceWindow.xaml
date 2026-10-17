@@ -44,6 +44,47 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- 標題列上的小按鈕（滑鼠移到分區上才出現） -->
+        <Style x:Key="TitleButton" TargetType="Button">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="22" />
+            <Setter Property="Margin" Value="1,0" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="Transparent" CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#40FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#60FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PanelText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#DDFFFFFF" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,10,0,4" />
+        </Style>
+
+        <Style x:Key="PanelCheck" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,6,0,0" />
+        </Style>
     </Window.Resources>
 
     <Border x:Name="RootBorder"
@@ -57,19 +98,49 @@
                     Height="28"
                     CornerRadius="5,5,0,0"
                     MouseLeftButtonDown="OnTitleMouseLeftButtonDown">
-                <TextBlock x:Name="TitleText"
-                           Margin="10,0"
-                           VerticalAlignment="Center"
-                           HorizontalAlignment="Center"
-                           Foreground="White"
-                           FontSize="13"
-                           FontWeight="SemiBold"
-                           TextTrimming="CharacterEllipsis"
-                           Effect="{StaticResource TextShadow}" />
+                <Grid>
+                    <TextBlock x:Name="TitleText"
+                               Margin="10,0"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Center"
+                               Foreground="White"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="雙擊：收合 / 展開"
+                               Effect="{StaticResource TextShadow}" />
+
+                    <!-- 直接在標題列改名 -->
+                    <TextBox x:Name="TitleEditor"
+                             Visibility="Collapsed"
+                             Margin="6,3,130,3"
+                             Padding="4,0"
+                             VerticalContentAlignment="Center"
+                             FontSize="13"
+                             Background="#E0FFFFFF"
+                             BorderThickness="0"
+                             KeyDown="OnTitleEditorKeyDown"
+                             LostKeyboardFocus="OnTitleEditorLostFocus" />
+
+                    <StackPanel x:Name="TitleButtons"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                Margin="0,0,4,0"
+                                Opacity="0"
+                                IsHitTestVisible="False">
+                        <Button x:Name="RenameButton" Style="{StaticResource TitleButton}" Content="&#xE70F;" ToolTip="改名" Click="OnRenameClick" />
+                        <Button x:Name="AddTabButton" Style="{StaticResource TitleButton}" Content="&#xE710;" ToolTip="新增分頁" Click="OnAddTabClick" />
+                        <Button x:Name="AppearanceButton" Style="{StaticResource TitleButton}" Content="&#xE790;" ToolTip="顏色與外觀" Click="OnAppearanceClick" />
+                        <Button x:Name="RollUpButton" Style="{StaticResource TitleButton}" Content="&#xE70E;" ToolTip="收合" Click="OnRollUpClick" />
+                        <Button x:Name="MoreButton" Style="{StaticResource TitleButton}" Content="&#xE712;" ToolTip="更多設定" Click="OnMoreClick" />
+                    </StackPanel>
+                </Grid>
             </Border>
 
             <!-- 分區內的分頁（有 2 個以上分頁才顯示） -->
             <WrapPanel x:Name="TabStrip" DockPanel.Dock="Top" Margin="6,4,6,0" Visibility="Collapsed" />
+
 
             <Grid>
                 <ListBox x:Name="ItemsList"
@@ -110,6 +181,34 @@
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
+
+                <Popup x:Name="AppearancePopup"
+                       PlacementTarget="{Binding ElementName=AppearanceButton}"
+                       Placement="Bottom"
+                       StaysOpen="False"
+                       AllowsTransparency="True"
+                       PopupAnimation="Fade"
+                       Closed="OnAppearancePopupClosed">
+                    <Border Background="#F02B2B2B" CornerRadius="8" Padding="14,6,14,12" Width="240"
+                            BorderBrush="#30FFFFFF" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource PanelText}" Text="顏色" />
+                            <WrapPanel x:Name="ColorSwatches" />
+
+                            <TextBlock x:Name="OpacityLabel" Style="{StaticResource PanelText}" Text="背景不透明度" />
+                            <Slider x:Name="OpacitySlider" Minimum="0" Maximum="100" SmallChange="5" LargeChange="10"
+                                    IsMoveToPointEnabled="True" ValueChanged="OnOpacitySliderChanged" />
+
+                            <TextBlock Style="{StaticResource PanelText}" Text="圖示大小" />
+                            <StackPanel x:Name="IconSizeButtons" Orientation="Horizontal" />
+
+                            <CheckBox x:Name="BlurCheck" Style="{StaticResource PanelCheck}" Margin="0,12,0,0"
+                                      Content="毛玻璃背景" Click="OnBlurCheckClick" />
+                            <CheckBox x:Name="FadeCheck" Style="{StaticResource PanelCheck}"
+                                      Content="平常淡化，滑鼠移上去才清楚" Click="OnFadeCheckClick" />
+                        </StackPanel>
+                    </Border>
+                </Popup>
 
                 <TextBlock x:Name="EmptyHint"
                            IsHitTestVisible="False"

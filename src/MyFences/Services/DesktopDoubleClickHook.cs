@@ -1,5 +1,4 @@
 using System;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Threading;
 using static MyFences.Services.NativeMethods;
@@ -65,8 +64,7 @@ internal sealed class DesktopDoubleClickHook : IDisposable
 
     private void OnLeftButtonDown(POINT pt, uint time)
     {
-        IntPtr listView = GetDesktopWindowAt(pt, out bool isDesktop);
-        if (!isDesktop)
+        if (!DesktopHelper.IsDesktopAt(pt, out IntPtr listView))
         {
             _hasLastClick = false;
             return;
@@ -93,43 +91,5 @@ internal sealed class DesktopDoubleClickHook : IDisposable
             if (listView == IntPtr.Zero || SendMessage(listView, LVM_GETSELECTEDCOUNT, IntPtr.Zero, IntPtr.Zero) == IntPtr.Zero)
                 _onDoubleClick();
         });
-    }
-
-    /// <summary>判斷這個點是不是桌面；是的話回傳桌面圖示的 ListView（圖示隱藏時可能是 Zero）。</summary>
-    private static IntPtr GetDesktopWindowAt(POINT pt, out bool isDesktop)
-    {
-        isDesktop = false;
-        IntPtr hwnd = WindowFromPoint(pt);
-        string cls = GetClassName(hwnd);
-
-        IntPtr listView = IntPtr.Zero;
-        if (cls == "SysListView32")
-        {
-            listView = hwnd;
-            hwnd = GetParent(hwnd);
-            cls = GetClassName(hwnd);
-        }
-
-        if (cls == "SHELLDLL_DefView")
-        {
-            hwnd = GetParent(hwnd);
-            cls = GetClassName(hwnd);
-        }
-        else if (listView != IntPtr.Zero)
-        {
-            return IntPtr.Zero; // 別的程式裡的 ListView
-        }
-
-        isDesktop = cls is "Progman" or "WorkerW";
-        return listView;
-    }
-
-    private static string GetClassName(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero)
-            return "";
-
-        var sb = new StringBuilder(64);
-        return NativeMethods.GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
     }
 }

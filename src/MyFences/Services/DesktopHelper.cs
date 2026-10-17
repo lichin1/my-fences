@@ -48,6 +48,75 @@ internal static class DesktopHelper
             SendMessage(defView, WM_COMMAND, new IntPtr(ToggleDesktopIconsCommand), IntPtr.Zero);
     }
 
+    public static bool IsHidden(string path)
+    {
+        try
+        {
+            return (File.GetAttributes(path) & FileAttributes.Hidden) != 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>設定 / 取消隱藏屬性（檔案和資料夾都可以）。失敗回傳 false。</summary>
+    public static bool TrySetHidden(string path, bool hidden)
+    {
+        try
+        {
+            FileAttributes attributes = File.GetAttributes(path);
+            FileAttributes updated = hidden ? attributes | FileAttributes.Hidden : attributes & ~FileAttributes.Hidden;
+            if (updated != attributes)
+                File.SetAttributes(path, updated);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>螢幕上這個點是不是桌面（不是其他視窗）；是的話順便回傳桌面圖示的 ListView。</summary>
+    public static bool IsDesktopAt(POINT pt, out IntPtr listView)
+    {
+        listView = IntPtr.Zero;
+        IntPtr hwnd = WindowFromPoint(pt);
+        string cls = GetClassName(hwnd);
+
+        if (cls == "SysListView32")
+        {
+            listView = hwnd;
+            hwnd = GetParent(hwnd);
+            cls = GetClassName(hwnd);
+            if (cls != "SHELLDLL_DefView")
+            {
+                listView = IntPtr.Zero;
+                return false; // 別的程式裡的 ListView
+            }
+        }
+
+        if (cls == "SHELLDLL_DefView")
+        {
+            hwnd = GetParent(hwnd);
+            cls = GetClassName(hwnd);
+        }
+
+        return cls is "Progman" or "WorkerW";
+    }
+
+    /// <summary>滑鼠游標現在是不是在桌面上。</summary>
+    public static bool IsCursorOverDesktop() => GetCursorPos(out POINT pt) && IsDesktopAt(pt, out _);
+
+    private static string GetClassName(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return "";
+
+        var sb = new System.Text.StringBuilder(64);
+        return NativeMethods.GetClassName(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
+    }
+
     public static IEnumerable<string> GetDesktopDirectories()
     {
         foreach (var folder in new[] { Environment.SpecialFolder.DesktopDirectory, Environment.SpecialFolder.CommonDesktopDirectory })

@@ -33,7 +33,10 @@ internal sealed class TrayIcon : IDisposable
         var quickHide = new ToolStripMenuItem("雙擊桌面空白處隱藏分區");
         quickHide.Click += (_, _) => app.SetQuickHide(!app.Config.QuickHideEnabled);
 
-        var hideIcons = new ToolStripMenuItem("隱藏系統桌面圖示");
+        var hideFenced = new ToolStripMenuItem("放進分區的圖示從桌面隱藏");
+        hideFenced.Click += (_, _) => app.SetHideFencedDesktopIcons(!app.Config.HideFencedDesktopIcons);
+
+        var hideIcons = new ToolStripMenuItem("隱藏所有系統桌面圖示");
         hideIcons.Click += (_, _) => DesktopHelper.SetDesktopIconsVisible(!DesktopHelper.AreDesktopIconsVisible());
 
         var locked = new ToolStripMenuItem("鎖定分區位置與大小");
@@ -50,6 +53,7 @@ internal sealed class TrayIcon : IDisposable
         autoStart.Click += (_, _) => StartupHelper.SetEnabled(!StartupHelper.IsEnabled);
 
         menu.Items.Add(quickHide);
+        menu.Items.Add(hideFenced);
         menu.Items.Add(hideIcons);
         menu.Items.Add(locked);
         menu.Items.Add(autoSort);
@@ -62,6 +66,7 @@ internal sealed class TrayIcon : IDisposable
         menu.Opening += (_, _) =>
         {
             quickHide.Checked = app.Config.QuickHideEnabled;
+            hideFenced.Checked = app.Config.HideFencedDesktopIcons;
             hideIcons.Checked = !DesktopHelper.AreDesktopIconsVisible();
             locked.Checked = app.Config.Locked;
             autoSort.Checked = app.Config.AutoSortNewItems;

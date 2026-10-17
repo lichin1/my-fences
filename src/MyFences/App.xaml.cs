@@ -28,6 +28,7 @@ public partial class App : Application
     private DesktopDoubleClickHook? _doubleClickHook;
     private IntPtr _progman;
     private bool _fencesHidden;
+    private bool _sessionEnding;
 
     public static new App Current => (App)Application.Current;
 
@@ -59,9 +60,12 @@ public partial class App : Application
         _saveTimer.Tick += (_, _) =>
         {
             _saveTimer.Stop();
+            SyncDesktopIcons();
             RecordMonitorLayout();
             ConfigStore.Save(Config);
         };
+        // 登出 / 關機時不還原桌面圖示，下次開機 MyFences 啟動後也還是藏著，比較不會閃一下
+        SessionEnding += (_, _) => _sessionEnding = true;
 
         Config.PageCount = Math.Max(Math.Max(1, Config.PageCount), Config.Fences.Select(f => f.Page + 1).DefaultIfEmpty(1).Max());
         Config.CurrentPage = Math.Clamp(Config.CurrentPage, 0, Config.PageCount - 1);
@@ -96,6 +100,8 @@ public partial class App : Application
         _desktopCheckTimer.Tick += (_, _) => CheckDesktopRestarted();
         _desktopCheckTimer.Start();
 
+        SyncDesktopIcons();
+
         _doubleClickHook = new DesktopDoubleClickHook(Dispatcher, OnDesktopDoubleClick) { Enabled = Config.QuickHideEnabled };
 
         TryEnsureDailySnapshot();
@@ -121,6 +127,9 @@ public partial class App : Application
         {
             _saveTimer.Stop();
             RecordMonitorLayout();
+            // 結束 MyFences 時把藏起來的桌面圖示還回去，免得檔案「不見」
+            if (!_sessionEnding)
+                SetDesktopIconsUnhidden();
             ConfigStore.Save(Config);
             _mutex.ReleaseMutex();
             _mutex.Dispose();
@@ -262,6 +271,49 @@ public partial class App : Application
         }
     }
 
+    public void SetHideFencedDesktopIcons(bool enabled)
+    {
+        Config.HideFencedDesktopIcons = enabled;
+        SyncDesktopIcons();
+        RequestSave();
+    }
+
+    /// <summary>讓桌面上「已放進分區的檔案」都設成隱藏，拿出分區的還原。</summary>
+    public void SyncDesktopIcons()
+    {
+        IEnumerable<string> fenced = Config.HideFencedDesktopIcons
+            ? Config.Fences.Where(f => f.Kind == FenceKind.Standard).SelectMany(f => f.AllItemLists()).SelectMany(l => l)
+            : Enumerable.Empty<string>();
+
+        DesktopIconSync.Plan plan = DesktopIconSync.Compute(
+            fenced,
+            DesktopHelper.GetDesktopDirectories(),
+            Config.HiddenDesktopItems,
+            p => File.Exists(p) || Directory.Exists(p),
+            DesktopHelper.IsHidden);
+
+        foreach (string path in plan.ToUnhide)
+        {
+            DesktopHelper.TrySetHidden(path, false);
+            Config.HiddenDesktopItems.RemoveAll(p => PathEquals(p, path));
+        }
+
+        foreach (string path in plan.ToHide)
+        {
+            // 例如公用桌面的檔案需要系統管理員權限，改不了就算了，照樣顯示在分區裡
+            if (DesktopHelper.TrySetHidden(path, true))
+                Config.HiddenDesktopItems.Add(path);
+        }
+    }
+
+    private void SetDesktopIconsUnhidden()
+    {
+        foreach (string path in Config.HiddenDesktopItems)
+            DesktopHelper.TrySetHidden(path, false);
+        Config.HiddenDesktopItems.Clear();
+        ConfigStore.Save(Config);
+    }
+
     public void SetLocked(bool locked)
     {
         Config.Locked = locked;
@@ -396,6 +448,11 @@ public partial class App : Application
 
     private void OnDesktopItemRenamed(string oldPath, string newPath)
     {
+        // 藏起來的檔案改名後屬性還在，追蹤清單也要跟著改名，之後才還原得了
+        int tracked = Config.HiddenDesktopItems.FindIndex(p => PathEquals(p, oldPath));
+        if (tracked >= 0)
+            Config.HiddenDesktopItems[tracked] = newPath;
+
         bool updated = false;
         foreach (FenceWindow window in _windows)
         {

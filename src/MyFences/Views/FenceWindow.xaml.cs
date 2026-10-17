@@ -166,7 +166,10 @@ public partial class FenceWindow : Window
         TitleText.Text = Config.Name;
         IconSize = Config.IconSize;
         CellWidth = Config.IconSize + 36;
-        EmptyHint.Text = IsStandard ? "把檔案或捷徑拖到這裡" : "資料夾是空的";
+        EmptyHint.Text = IsStandard ? "把桌面上的檔案拖到這裡\n滑鼠移到標題列可以改名、換顏色" : "資料夾是空的";
+        AddTabButton.Visibility = IsStandard ? Visibility.Visible : Visibility.Collapsed;
+        RollUpButton.Content = Config.RolledUp ? "\uE70D" : "\uE70E";
+        RollUpButton.ToolTip = Config.RolledUp ? "展開" : "收合";
     }
 
     /// <summary>依鎖定 / 收合狀態設定可否縮放。</summary>
@@ -272,6 +275,168 @@ public partial class FenceWindow : Window
         BeginAnimation(OpacityProperty, new DoubleAnimation(target, TimeSpan.FromMilliseconds(target < 1 ? 400 : 150)));
     }
 
+    // ───────────── 標題列按鈕 ─────────────
+
+    private void UpdateTitleButtons()
+    {
+        bool show = IsMouseOver || AppearancePopup.IsOpen || TitleEditor.IsVisible || RootBorder.ContextMenu?.IsOpen == true;
+        TitleButtons.BeginAnimation(OpacityProperty, new DoubleAnimation(show ? 1 : 0, TimeSpan.FromMilliseconds(150)));
+        TitleButtons.IsHitTestVisible = show;
+    }
+
+    private void OnRenameClick(object sender, RoutedEventArgs e) => BeginRename();
+
+    private void BeginRename()
+    {
+        TitleEditor.Text = Config.Name;
+        TitleEditor.Visibility = Visibility.Visible;
+        TitleText.Visibility = Visibility.Hidden;
+        Activate();
+        TitleEditor.Focus();
+        TitleEditor.SelectAll();
+    }
+
+    private void EndRename(bool commit)
+    {
+        if (TitleEditor.Visibility != Visibility.Visible)
+            return;
+
+        TitleEditor.Visibility = Visibility.Collapsed;
+        TitleText.Visibility = Visibility.Visible;
+        if (commit && !string.IsNullOrWhiteSpace(TitleEditor.Text))
+        {
+            Config.Name = TitleEditor.Text.Trim();
+            ApplyAppearance();
+            App.Current.RequestSave();
+        }
+
+        UpdateTitleButtons();
+    }
+
+    private void OnTitleEditorKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            EndRename(commit: true);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            EndRename(commit: false);
+            e.Handled = true;
+        }
+    }
+
+    private void OnTitleEditorLostFocus(object sender, KeyboardFocusChangedEventArgs e) => EndRename(commit: true);
+
+    private void OnAddTabClick(object sender, RoutedEventArgs e) => AddTab();
+
+    private void OnRollUpClick(object sender, RoutedEventArgs e) => ToggleRollUp();
+
+    private void OnMoreClick(object sender, RoutedEventArgs e)
+    {
+        ContextMenu menu = BuildFenceMenu();
+        menu.PlacementTarget = MoreButton;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.Closed += (_, _) =>
+        {
+            UpdateTitleButtons();
+            UpdateFade();
+        };
+        RootBorder.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    // ───────────── 外觀面板 ─────────────
+
+    private bool _updatingPanel;
+
+    private void OnAppearanceClick(object sender, RoutedEventArgs e)
+    {
+        _updatingPanel = true;
+        ColorSwatches.Children.Clear();
+        foreach ((string name, string color) in ColorPresets)
+        {
+            bool selected = string.Equals(Config.Color, color, StringComparison.OrdinalIgnoreCase);
+            var swatch = new Border
+            {
+                Width = 24,
+                Height = 24,
+                Margin = new Thickness(0, 0, 6, 6),
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)),
+                BorderBrush = selected ? Brushes.White : new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0xFF, 0xFF)),
+                BorderThickness = new Thickness(selected ? 2.5 : 1),
+                Cursor = Cursors.Hand,
+                ToolTip = name,
+            };
+            swatch.MouseLeftButtonUp += (_, _) =>
+            {
+                SetColor(color);
+                OnAppearanceClick(sender, e); // 重畫選取框
+            };
+            ColorSwatches.Children.Add(swatch);
+        }
+
+        OpacitySlider.Value = Math.Round(Config.Opacity * 100);
+        OpacityLabel.Text = $"背景不透明度 {OpacitySlider.Value:0}%";
+
+        IconSizeButtons.Children.Clear();
+        foreach ((string name, double size) in IconSizePresets)
+        {
+            bool selected = Math.Abs(Config.IconSize - size) < 0.5;
+            var button = new Border
+            {
+                Padding = new Thickness(14, 3, 14, 4),
+                Margin = new Thickness(0, 0, 6, 0),
+                CornerRadius = new CornerRadius(4),
+                Background = selected ? ActiveTabBrush : InactiveTabBrush,
+                Cursor = Cursors.Hand,
+                Child = new TextBlock { Text = name, Foreground = Brushes.White, FontSize = 12 },
+            };
+            button.MouseLeftButtonUp += (_, _) =>
+            {
+                SetIconSize(size);
+                OnAppearanceClick(sender, e);
+            };
+            IconSizeButtons.Children.Add(button);
+        }
+
+        BlurCheck.IsChecked = Config.Blur;
+        FadeCheck.IsChecked = Config.FadeWhenIdle;
+        _updatingPanel = false;
+
+        AppearancePopup.IsOpen = true;
+        UpdateTitleButtons();
+    }
+
+    private void OnAppearancePopupClosed(object? sender, EventArgs e)
+    {
+        UpdateTitleButtons();
+        UpdateFade();
+    }
+
+    private void OnOpacitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_updatingPanel)
+            return;
+
+        OpacityLabel.Text = $"背景不透明度 {e.NewValue:0}%";
+        SetOpacity(Math.Round(e.NewValue) / 100.0);
+    }
+
+    private void OnBlurCheckClick(object sender, RoutedEventArgs e)
+    {
+        if (BlurCheck.IsChecked != Config.Blur)
+            ToggleBlur();
+    }
+
+    private void OnFadeCheckClick(object sender, RoutedEventArgs e)
+    {
+        if (FadeCheck.IsChecked != Config.FadeWhenIdle)
+            ToggleFade();
+    }
+
     // ───────────── 分頁 ─────────────
 
     private static readonly Brush ActiveTabBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
@@ -301,7 +466,7 @@ public partial class FenceWindow : Window
                 Background = index == Config.ActiveTab ? ActiveTabBrush : InactiveTabBrush,
                 Cursor = Cursors.Hand,
                 AllowDrop = true,
-                ToolTip = $"{tab.Items.Count} 個項目（可以把圖示拖到這裡）",
+                ToolTip = $"{tab.Items.Count} 個項目\n把圖示拖到這裡就能移過來，雙擊可改名",
                 Child = new TextBlock
                 {
                     Text = tab.Name,
@@ -311,6 +476,14 @@ public partial class FenceWindow : Window
                     Effect = (System.Windows.Media.Effects.Effect)FindResource("TextShadow"),
                 },
             };
+            header.MouseLeftButtonDown += (_, e) =>
+            {
+                if (e.ClickCount == 2)
+                {
+                    RenameTab(index);
+                    e.Handled = true;
+                }
+            };
             header.MouseLeftButtonUp += (_, e) =>
             {
                 SwitchTab(index);
@@ -318,17 +491,29 @@ public partial class FenceWindow : Window
             };
             header.DragOver += (_, e) =>
             {
-                e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Link : DragDropEffects.None;
+                e.Effects = DropEffectFor(e.Data);
                 e.Handled = true;
             };
             header.Drop += (_, e) =>
             {
                 e.Handled = true;
-                if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
+                e.Effects = DropEffectFor(e.Data);
+                string[] files = GetDroppedPaths(e.Data, out string? _);
+                if (files.Length > 0)
                     DropOnTab(index, files);
             };
             TabStrip.Children.Add(header);
         }
+
+        var add = new Button
+        {
+            Style = (Style)FindResource("TitleButton"),
+            Content = "\uE710",
+            Height = 20,
+            ToolTip = "新增分頁",
+        };
+        add.Click += (_, _) => AddTab();
+        TabStrip.Children.Add(add);
     }
 
     private void SwitchTab(int index)
@@ -356,13 +541,10 @@ public partial class FenceWindow : Window
         App.Current.RequestSave();
     }
 
+    /// <summary>直接新增一個分頁（之後雙擊分頁標籤可以改名）。</summary>
     private void AddTab()
     {
-        string? name = InputDialog.Ask("新增分頁", "分頁名稱：", $"分頁 {Math.Max(2, Config.Tabs.Count + 1)}");
-        if (string.IsNullOrWhiteSpace(name))
-            return;
-
-        Config.AddTab(name.Trim());
+        Config.AddTab($"分頁 {Math.Max(2, Config.Tabs.Count + 1)}");
         ReloadItems();
         App.Current.RequestSave();
     }
@@ -479,17 +661,20 @@ public partial class FenceWindow : Window
         _hoverExpanded = false;
         Height = Config.RolledUp ? RolledUpHeight : Config.Height;
         ApplyChrome();
+        ApplyAppearance();
         App.Current.RequestSave();
     }
 
     private void OnMouseEnter(object sender, MouseEventArgs e)
     {
+        UpdateTitleButtons();
         UpdateFade();
         ExpandTemporarily();
     }
 
     private void OnMouseLeave(object sender, MouseEventArgs e)
     {
+        UpdateTitleButtons();
         UpdateFade();
         if (!_hoverExpanded || ItemsList.ContextMenu?.IsOpen == true || RootBorder.ContextMenu?.IsOpen == true)
             return;
@@ -588,11 +773,63 @@ public partial class FenceWindow : Window
         FenceItem item = _pressedItem;
         _pressedItem = null;
 
-        var data = new DataObject(DataFormats.FileDrop, new[] { item.FullPath });
-        data.SetData(InternalDragFormat, Config.Id);
-        // 不允許 Move：拖到檔案總管時只會複製或建立捷徑，不會誤搬原始檔
-        DragDrop.DoDragDrop(ItemsList, data, DragDropEffects.Copy | DragDropEffects.Link);
+        if (!IsStandard)
+        {
+            // 資料夾分區裡是真的檔案：可以拖到檔案總管複製 / 建立捷徑（不允許 Move，避免誤搬）
+            DragDrop.DoDragDrop(ItemsList, new DataObject(DataFormats.FileDrop, new[] { item.FullPath }),
+                DragDropEffects.Copy | DragDropEffects.Link);
+            return;
+        }
+
+        // 一般分區只放自己的格式（不放 FileDrop）：拖到桌面或檔案總管時，Explorer 不會複製出一份檔案
+        var data = new DataObject(InternalDragFormat, Config.Id + "\n" + item.FullPath);
+        GiveFeedbackEventHandler feedback = (_, fe) =>
+        {
+            // 拖到桌面上會「拿出分區」，不要顯示禁止符號
+            if (fe.Effects == DragDropEffects.None && DesktopHelper.IsCursorOverDesktop())
+            {
+                fe.UseDefaultCursors = false;
+                Mouse.SetCursor(Cursors.Arrow);
+                fe.Handled = true;
+            }
+        };
+        ItemsList.GiveFeedback += feedback;
+        DragDropEffects result;
+        try
+        {
+            result = DragDrop.DoDragDrop(ItemsList, data, DragDropEffects.Move);
+        }
+        finally
+        {
+            ItemsList.GiveFeedback -= feedback;
+        }
+
+        // 沒有被任何分區接住、而且放在桌面上 = 拿出分區（桌面圖示會重新出現）
+        if (result == DragDropEffects.None && DesktopHelper.IsCursorOverDesktop())
+            RemoveItem(item);
     }
+
+    /// <summary>拖進來的路徑：從其他分區拖來的（自己的格式）或從桌面 / 檔案總管拖來的（FileDrop）。</summary>
+    private static string[] GetDroppedPaths(IDataObject data, out string? sourceFenceId)
+    {
+        sourceFenceId = null;
+        if (data.GetDataPresent(InternalDragFormat) && data.GetData(InternalDragFormat) is string text &&
+            text.Split('\n', 2) is [var id, var path])
+        {
+            sourceFenceId = id;
+            return new[] { path };
+        }
+
+        return data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] files
+            ? files
+            : Array.Empty<string>();
+    }
+
+    private static DragDropEffects DropEffectFor(IDataObject data) =>
+        data.GetDataPresent(InternalDragFormat) ? DragDropEffects.Move
+        // 從桌面 / 檔案總管拖來時回報 Link 而非 Move，檔案總管就不會刪掉原始檔
+        : data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Link
+        : DragDropEffects.None;
 
     // ───────────── 拖放進分區 ─────────────
 
@@ -604,20 +841,20 @@ public partial class FenceWindow : Window
 
     private void OnDragOver(object sender, DragEventArgs e)
     {
-        // 回報 Link 而非 Move，檔案總管就不會刪掉原始檔
-        e.Effects = IsStandard && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Link : DragDropEffects.None;
+        e.Effects = IsStandard ? DropEffectFor(e.Data) : DragDropEffects.None;
         e.Handled = true;
     }
 
     private void OnDrop(object sender, DragEventArgs e)
     {
         e.Handled = true;
-        if (!IsStandard || e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
+        string[] files = GetDroppedPaths(e.Data, out string? sourceFenceId);
+        if (!IsStandard || files.Length == 0)
             return;
 
+        e.Effects = DropEffectFor(e.Data);
         int index = GetDropIndex(e);
-        bool fromThisFence = e.Data.GetDataPresent(InternalDragFormat) &&
-                             e.Data.GetData(InternalDragFormat) as string == Config.Id;
+        bool fromThisFence = sourceFenceId == Config.Id;
 
         foreach (string file in files)
         {
@@ -702,7 +939,7 @@ public partial class FenceWindow : Window
     private ContextMenu BuildFenceMenu()
     {
         var menu = new ContextMenu();
-        menu.Items.Add(MakeItem("重新命名…", Rename));
+        menu.Items.Add(MakeItem("重新命名", BeginRename));
 
         var colors = ColorPresets
             .Select(c => (object)MakeItem(c.Name, () => SetColor(c.Color), isChecked: string.Equals(Config.Color, c.Color, StringComparison.OrdinalIgnoreCase)))
@@ -782,17 +1019,6 @@ public partial class FenceWindow : Window
     {
         Config.CurrentItems.RemoveAll(p => App.PathEquals(p, item.FullPath));
         ReloadItems();
-        App.Current.RequestSave();
-    }
-
-    private void Rename()
-    {
-        string? name = InputDialog.Ask("重新命名分區", "分區名稱：", Config.Name);
-        if (string.IsNullOrWhiteSpace(name))
-            return;
-
-        Config.Name = name.Trim();
-        ApplyAppearance();
         App.Current.RequestSave();
     }
 
