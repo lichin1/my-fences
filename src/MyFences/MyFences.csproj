@@ -13,9 +13,33 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AssemblyName>MyFences</AssemblyName>
     <RootNamespace>MyFences</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <!-- WPF 程式用 manifest 設定 DPI，不適用 WinForms 的 SetHighDpiMode 建議 -->
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    exe 的「內容 → 詳細資料」會顯示這些資訊。沒有任何版本 / 發行者資訊的 exe
+    比較容易被防毒軟體的啟發式掃描當成可疑程式。
+  -->
+  <PropertyGroup>
+    <Product>MyFences</Product>
+    <AssemblyTitle>MyFences 桌面分區整理工具</AssemblyTitle>
+    <Description>Desktop organizer that groups desktop icons into fences.</Description>
+    <Company>lichin1</Company>
+    <Authors>lichin1</Authors>
+    <Copyright>Copyright © 2026 lichin1</Copyright>
+    <NeutralLanguage>zh-TW</NeutralLanguage>
+  </PropertyGroup>
+
+  <!--
+    發佈成單一 exe 時不要壓縮：壓縮後的自解壓 exe 看起來像「加殼」程式，
+    是防毒軟體與瀏覽器常見的可疑特徵。檔案會大一點，但比較不會被誤判。
+  -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
   </PropertyGroup>
 
 </Project>

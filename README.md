@@ -44,9 +44,24 @@
 
 ## 安裝 / 執行
 
-### 直接下載
+### 建議：在自己電腦上建置（不會被瀏覽器 / SmartScreen 攔）
 
-每次推到 `main`，GitHub Actions 會建一個單一 exe：到 repo 的 **Actions** → 最新一次 `build` → 下載 `MyFences-win-x64`，解壓後執行 `MyFences.exe`（self-contained，不用另外裝 .NET）。
+MyFences 沒有程式碼簽章，從網路下載的 exe 會被 Chrome、Edge 和 Windows SmartScreen 當成「不常見的檔案」攔下來。
+在自己電腦上用原始碼建置就沒有這個問題：
+
+1. 在 GitHub repo 頁面按 **Code → Download ZIP**，解壓縮（或用 `git clone`）
+2. 在解壓後的資料夾開 PowerShell，執行：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+   ```
+3. 腳本會自動安裝 .NET 8 SDK（第一次）、建置、裝到 `%LOCALAPPDATA%\MyFences`、建立開始功能表捷徑並啟動
+
+要更新時，拿到新版原始碼再執行一次即可，設定檔不受影響。
+
+### 直接下載 exe
+
+每次推到 `main`，GitHub Actions 會建一個單一 exe：到 repo 的 **Actions** → 最新一次 `build` → 下載 `MyFences-win-x64`。
+瀏覽器擋下載時，到 `chrome://downloads` 選「保留」；執行前對 exe 按右鍵 →「內容」→ 勾「解除封鎖」。
 
 ### 自己 build
 
@@ -55,10 +70,15 @@
 ```powershell
 dotnet run --project src/MyFences
 # 或發佈成單一 exe
-dotnet publish src/MyFences -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o publish
+dotnet publish src/MyFences -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
 ```
 
 也可以用 Visual Studio 2022 開 `MyFences.sln`。
+
+### 關於「沒有簽章」的警告
+
+這些警告看的是「發行者簽章」和「下載的人數（信譽）」，不是程式內容，所以改程式碼沒辦法完全消除。
+要讓下載的 exe 不被攔，只能購買程式碼簽章憑證（例如 Azure Trusted Signing）或把 repo 公開後申請開源專案的免費簽章（例如 SignPath Foundation）。
 
 ## 設定檔
 
