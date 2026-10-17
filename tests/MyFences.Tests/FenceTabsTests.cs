@@ -82,3 +82,42 @@ public sealed class FenceTabsTests
         Assert.Same(fence.Tabs[1].Items, fence.CurrentItems);
     }
 }
+
+public sealed class FenceTabOrderTests
+{
+    private static FenceConfig ThreeTabs()
+    {
+        var fence = new FenceConfig { Name = "A" };
+        fence.AddTab("B");
+        fence.AddTab("C");
+        return fence; // A, B, C，作用中是 C
+    }
+
+    private static string Order(FenceConfig f) => string.Concat(f.Tabs.Select(t => t.Name));
+
+    [Theory]
+    [InlineData(0, 3, "BCA")] // 第一個拖到最後
+    [InlineData(2, 0, "CAB")] // 最後一個拖到最前
+    [InlineData(0, 2, "BAC")] // 拖到 C 前面
+    [InlineData(1, 1, "ABC")] // 放回原位
+    [InlineData(1, 2, "ABC")] // 放在自己後面 = 原位
+    public void Move_tab_reorders(int from, int to, string expected)
+    {
+        FenceConfig fence = ThreeTabs();
+
+        fence.MoveTab(from, to);
+
+        Assert.Equal(expected, Order(fence));
+    }
+
+    [Fact]
+    public void Active_tab_stays_the_same_tab_after_reordering()
+    {
+        FenceConfig fence = ThreeTabs();
+        fence.ActiveTab = 1; // B
+
+        fence.MoveTab(0, 3); // A 拖到最後 → B, C, A
+
+        Assert.Equal("B", fence.Tabs[fence.ActiveTab].Name);
+    }
+}

@@ -614,7 +614,7 @@ public partial class FenceWindow : Window
             Margin = new Thickness(0, 0, 4, 3),
             Cursor = Cursors.Hand,
             AllowDrop = true,
-            ToolTip = $"{tab.Items.Count} 個項目・雙擊改名・把圖示拖到這裡就能移過來",
+            ToolTip = $"{tab.Items.Count} 個項目・雙擊改名・拖曳調整順序・把圖示拖到這裡就能移過來",
         };
         header.SetResourceReference(Border.BackgroundProperty, active ? ActiveTabBrush : InactiveTabBrush);
         var content = new StackPanel { Orientation = Orientation.Horizontal };
@@ -711,14 +711,58 @@ public partial class FenceWindow : Window
             SwitchTab(index);
             e.Handled = true;
         };
+
+        // 拖曳標籤 = 調整順序
+        header.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            _tabDragStart = e.GetPosition(TabStrip);
+            _tabPressed = index;
+        };
+        header.PreviewMouseMove += (_, e) =>
+        {
+            if (_tabPressed != index || e.LeftButton != MouseButtonState.Pressed)
+                return;
+
+            Vector delta = e.GetPosition(TabStrip) - _tabDragStart;
+            if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance)
+            {
+                return;
+            }
+
+            _tabPressed = null;
+            DragDrop.DoDragDrop(header, new DataObject(TabDragFormat, $"{Config.Id}|{index}"), DragDropEffects.Move);
+        };
+
         header.DragOver += (_, e) =>
         {
-            e.Effects = DropEffectFor(e.Data);
             e.Handled = true;
+            if (DraggedTabIndex(e.Data) is not null)
+            {
+                // 標籤：顯示會插在左邊還是右邊
+                bool before = e.GetPosition(header).X < header.ActualWidth / 2;
+                header.BorderThickness = before ? new Thickness(2, 0, 0, 0) : new Thickness(0, 0, 2, 0);
+                header.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");
+                e.Effects = DragDropEffects.Move;
+                return;
+            }
+
+            e.Effects = DropEffectFor(e.Data);
         };
+        header.DragLeave += (_, _) => header.BorderThickness = new Thickness(0);
         header.Drop += (_, e) =>
         {
             e.Handled = true;
+            header.BorderThickness = new Thickness(0);
+            if (DraggedTabIndex(e.Data) is { } from)
+            {
+                bool before = e.GetPosition(header).X < header.ActualWidth / 2;
+                Config.MoveTab(from, before ? index : index + 1);
+                ReloadItems();
+                App.Current.RequestSave();
+                return;
+            }
+
             e.Effects = DropEffectFor(e.Data);
             string[] files = GetDroppedPaths(e.Data, out string? _);
             if (files.Length > 0)
@@ -726,6 +770,17 @@ public partial class FenceWindow : Window
         };
         return header;
     }
+
+    private const string TabDragFormat = "MyFences.Tab";
+    private Point _tabDragStart;
+    private int? _tabPressed;
+
+    /// <summary>拖曳中的是不是這個分區自己的分頁標籤；是的話回傳原本的位置。</summary>
+    private int? DraggedTabIndex(IDataObject data) =>
+        data.GetDataPresent(TabDragFormat) && data.GetData(TabDragFormat) is string text &&
+        text.Split('|') is [var fenceId, var idx] && fenceId == Config.Id && int.TryParse(idx, out int i)
+            ? i
+            : null;
 
     private void SwitchTab(int index)
     {
@@ -823,6 +878,79 @@ public partial class FenceWindow : Window
     {
         _portalReloadTimer.Stop();
         _portalReloadTimer.Start();
+    }
+
+    // ───────────── 把資料夾拖到標題列 → 資料夾分區 ─────────────
+
+    /// <summary>拖進來的是不是剛好一個資料夾。</summary>
+    private static string? DroppedSingleFolder(IDataObject data)
+    {
+        string[] paths = GetDroppedPaths(data, out string? _);
+        return paths.Length == 1 && Directory.Exists(paths[0]) ? paths[0] : null;
+    }
+
+    private bool IsEmptyStandard => IsStandard && Config.AllItemLists().All(items => items.Count == 0);
+
+    private static string FolderDisplayName(string folder)
+    {
+        string name = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return string.IsNullOrEmpty(name) ? folder : name;
+    }
+
+    private void OnTitleDragOver(object sender, DragEventArgs e)
+    {
+        // 不是資料夾就交給整個分區處理（一般的拖進分區）
+        if (DroppedSingleFolder(e.Data) is not { } folder)
+            return;
+
+        e.Effects = DragDropEffects.Link;
+        e.Handled = true;
+        string name = FolderDisplayName(folder);
+        TitleText.Text = !IsStandard ? $"放開：改成顯示「{name}」"
+            : IsEmptyStandard ? $"放開：變成「{name}」資料夾分區"
+            : $"放開：在旁邊建立「{name}」資料夾分區";
+        SetDropHighlight(true);
+    }
+
+    private void OnTitleDragLeave(object sender, DragEventArgs e)
+    {
+        TitleText.Text = Config.Name;
+        SetDropHighlight(false);
+    }
+
+    private void OnTitleDrop(object sender, DragEventArgs e)
+    {
+        TitleText.Text = Config.Name;
+        SetDropHighlight(false);
+        if (DroppedSingleFolder(e.Data) is not { } folder)
+            return; // 交給整個分區的 Drop
+
+        e.Handled = true;
+        e.Effects = DragDropEffects.Link;
+        if (!IsStandard || IsEmptyStandard)
+        {
+            App.Current.PushUndo(IsStandard ? $"「{Config.Name}」變成資料夾分區" : $"已改成顯示「{FolderDisplayName(folder)}」");
+            ShowFolder(folder);
+        }
+        else
+        {
+            App.Current.CreateFolderFenceBeside(this, folder);
+        }
+    }
+
+    /// <summary>把這個分區改成顯示某個資料夾的內容。</summary>
+    private void ShowFolder(string folder)
+    {
+        Config.Kind = FenceKind.Folder;
+        Config.FolderPath = folder;
+        Config.Name = FolderDisplayName(folder);
+        Config.Items.Clear();
+        Config.Tabs.Clear();
+        Config.Rules.Clear();
+        SetupPortalWatcher();
+        ReloadItems();
+        ApplyAppearance();
+        App.Current.RequestSave();
     }
 
     // ───────────── 標題列：拖曳、收合 ─────────────

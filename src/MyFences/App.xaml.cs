@@ -21,6 +21,7 @@ public partial class App : Application
     private readonly DispatcherTimer _displayChangeTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
     private List<ScreenInfo> _screens = new();
     private PageIndicator? _pageIndicator;
+    private PagerBar? _pager;
     private Mutex? _mutex;
     private TrayIcon? _tray;
     private HotkeyManager? _hotkeys;
@@ -73,6 +74,7 @@ public partial class App : Application
 
         foreach (FenceConfig fence in Config.Fences)
             OpenFence(fence);
+        UpdatePager();
 
         // 螢幕組合跟上次結束時不同（例如筆電拔掉外接螢幕後才開機）就換算一次位置
         _screens = GetScreens();
@@ -109,6 +111,7 @@ public partial class App : Application
         {
             foreach (FenceWindow window in _windows)
                 window.ApplyAppearance();
+            UpdatePager();
         };
 
         _mouseHook = new DesktopMouseHook(Dispatcher, OnDesktopDoubleClick, OnDesktopDrawing, OnDesktopDrawn)
@@ -167,17 +170,21 @@ public partial class App : Application
     }
 
     /// <summary>建立分區；at 有值時放在那個螢幕像素範圍（Ctrl+拖曳畫出來的）。建好後直接進入改名。</summary>
-    public FenceWindow? CreateFence(FenceKind kind, PixelRect? at = null)
+    public FenceWindow? CreateFence(FenceKind kind, PixelRect? at = null, string? folderPath = null)
     {
-        string? folder = null;
+        string? folder = folderPath;
         string name = "新分區";
-        if (kind == FenceKind.Folder)
+        if (kind == FenceKind.Folder && folder == null)
         {
             var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "選擇要顯示在分區裡的資料夾" };
             if (dialog.ShowDialog() != true)
                 return null;
 
             folder = dialog.FolderName;
+        }
+
+        if (folder != null)
+        {
             string folderName = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar));
             name = string.IsNullOrEmpty(folderName) ? folder : folderName;
         }
@@ -204,6 +211,20 @@ public partial class App : Application
             window.BeginRename();
         RequestSave();
         return window;
+    }
+
+    /// <summary>在某個分區旁邊建立資料夾分區（一樣大小，放得下就放右邊）。</summary>
+    public void CreateFolderFenceBeside(FenceWindow anchor, string folder)
+    {
+        PixelRect? at = null;
+        if (anchor.GetPixelBounds() is { } bounds)
+        {
+            System.Drawing.Rectangle wa = System.Windows.Forms.Screen.FromRectangle(
+                new System.Drawing.Rectangle(bounds.X, bounds.Y, bounds.Width, bounds.Height)).WorkingArea;
+            at = LayoutMath.PlaceBeside(bounds, new PixelRect(wa.X, wa.Y, wa.Width, wa.Height));
+        }
+
+        CreateFence(FenceKind.Folder, at, folder);
     }
 
     public void DeleteFence(FenceWindow window)
@@ -296,6 +317,25 @@ public partial class App : Application
             else if (!show && window.IsVisible)
                 window.Hide();
         }
+
+        UpdatePager();
+    }
+
+    /// <summary>桌面底部的頁面圓點：兩頁以上、而且分區沒被隱藏時才顯示。</summary>
+    private void UpdatePager()
+    {
+        if (Config.PageCount <= 1 || _fencesHidden)
+        {
+            _pager?.Hide();
+            return;
+        }
+
+        _pager ??= new PagerBar();
+        _pager.Update(
+            Config.PageCount,
+            Config.CurrentPage,
+            page => Config.Fences.Count(f => f.Page == page),
+            SwitchPage);
     }
 
     public void SetHideFencedDesktopIcons(bool enabled)
@@ -406,6 +446,7 @@ public partial class App : Application
             ToggleFences();
         foreach (FenceConfig fence in Config.Fences)
             OpenFence(fence);
+        UpdatePager();
         RequestSave();
     }
 
@@ -702,5 +743,6 @@ public partial class App : Application
         _progman = progman;
         foreach (FenceWindow window in _windows)
             window.AttachToDesktop();
+        _pager?.AttachToDesktop();
     }
 }

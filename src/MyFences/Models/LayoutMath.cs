@@ -78,6 +78,20 @@ public static class LayoutMath
         return new PixelRect(x, y, width, height);
     }
 
+    /// <summary>在 anchor 旁邊放一個一樣大的新分區：優先右邊，放不下就左邊，再不行就下面，最後確保在螢幕內。</summary>
+    public static PixelRect PlaceBeside(PixelRect anchor, PixelRect area, int gap = 8)
+    {
+        var right = new PixelRect(anchor.Right + gap, anchor.Y, anchor.Width, anchor.Height);
+        if (right.Right <= area.Right)
+            return Clamp(right, area);
+
+        var left = new PixelRect(anchor.X - gap - anchor.Width, anchor.Y, anchor.Width, anchor.Height);
+        if (left.X >= area.X)
+            return Clamp(left, area);
+
+        return Clamp(new PixelRect(anchor.X, anchor.Bottom + gap, anchor.Width, anchor.Height), area);
+    }
+
     /// <summary>
     /// 拖曳 / 縮放分區時的吸附：靠近螢幕邊緣、其他分區的邊（對齊或並排、留 gap 間距）就吸過去。
     /// edges = All 是移動（保持大小）；否則是縮放，只吸附正在拖的那幾個邊。

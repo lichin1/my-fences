@@ -112,6 +112,28 @@ public sealed class FenceConfig
         ActiveTab = target;
     }
 
+    /// <summary>
+    /// 調整分頁順序：把第 from 個分頁移到第 to 個位置（to 是移動前的插入位置，
+    /// 0 = 最前面、Tabs.Count = 最後面）。作用中的分頁保持不變。
+    /// </summary>
+    public void MoveTab(int from, int to)
+    {
+        if (!HasTabs || from < 0 || from >= Tabs.Count)
+            return;
+
+        to = Math.Clamp(to, 0, Tabs.Count);
+        if (to > from)
+            to--; // 先拿掉自己，後面的位置會往前一格
+        if (to == from)
+            return;
+
+        FenceTab active = Tabs[Math.Clamp(ActiveTab, 0, Tabs.Count - 1)];
+        FenceTab moving = Tabs[from];
+        Tabs.RemoveAt(from);
+        Tabs.Insert(to, moving);
+        ActiveTab = Tabs.IndexOf(active);
+    }
+
     /// <summary>把項目從目前分頁移到另一個分頁。</summary>
     public void MoveToTab(string path, int tabIndex)
     {

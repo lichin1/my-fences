@@ -118,6 +118,10 @@
                     DockPanel.Dock="Top"
                     Height="30"
                     CornerRadius="7,7,0,0"
+                    AllowDrop="True"
+                    DragOver="OnTitleDragOver"
+                    DragLeave="OnTitleDragLeave"
+                    Drop="OnTitleDrop"
                     MouseLeftButtonDown="OnTitleMouseLeftButtonDown">
                 <Grid>
                     <TextBlock x:Name="TitleText"

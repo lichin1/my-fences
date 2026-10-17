@@ -141,3 +141,21 @@ public sealed class SnapTests
         Assert.Equal(new PixelRect(100, 100, 492, 200), result.Rect);
     }
 }
+
+public sealed class PlaceBesideTests
+{
+    private static readonly PixelRect Area = new(0, 0, 1920, 1040);
+
+    [Fact]
+    public void Prefers_the_right_side()
+    {
+        Assert.Equal(new PixelRect(408, 100, 300, 200), LayoutMath.PlaceBeside(new PixelRect(100, 100, 300, 200), Area));
+    }
+
+    [Fact]
+    public void Falls_back_to_the_left_then_below()
+    {
+        Assert.Equal(new PixelRect(1292, 100, 300, 200), LayoutMath.PlaceBeside(new PixelRect(1600, 100, 300, 200), Area));
+        Assert.Equal(new PixelRect(0, 308, 1900, 300), LayoutMath.PlaceBeside(new PixelRect(0, 0, 1900, 300), Area));
+    }
+}
