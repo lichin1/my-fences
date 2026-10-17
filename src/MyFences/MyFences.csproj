@@ -32,14 +32,4 @@
     <NeutralLanguage>zh-TW</NeutralLanguage>
   </PropertyGroup>
 
-  <!--
-    發佈成單一 exe 時不要壓縮：壓縮後的自解壓 exe 看起來像「加殼」程式，
-    是防毒軟體與瀏覽器常見的可疑特徵。檔案會大一點，但比較不會被誤判。
-  -->
-  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
-    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <DebugType>none</DebugType>
-  </PropertyGroup>
-
 </Project>
