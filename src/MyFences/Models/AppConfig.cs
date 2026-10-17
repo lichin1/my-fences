@@ -19,6 +19,20 @@ public sealed class AppConfig
     /// <summary>第一次觸發雙擊隱藏時提示過了沒。</summary>
     public bool QuickHideHintShown { get; set; }
 
+    /// <summary>桌面頁數（至少 1）。</summary>
+    public int PageCount { get; set; } = 1;
+
+    public int CurrentPage { get; set; }
+
+    /// <summary>
+    /// 每一種螢幕組合（<see cref="LayoutMath.ProfileKey"/>）下各分區的位置，
+    /// 回到同一組螢幕設定時就還原當時的版面。
+    /// </summary>
+    public Dictionary<string, Dictionary<string, SavedBounds>> MonitorLayouts { get; set; } = new();
+
+    /// <summary>上次結束時的螢幕組合（下次啟動時螢幕變了就自動換算）。</summary>
+    public List<ScreenInfo> LastScreens { get; set; } = new();
+
     public static AppConfig CreateDefault()
     {
         var config = new AppConfig();
@@ -47,4 +61,17 @@ public sealed class AppConfig
         });
         return config;
     }
+}
+
+/// <summary>某個螢幕組合下，一個分區的位置。</summary>
+public sealed class SavedBounds
+{
+    /// <summary>視窗的螢幕像素座標。</summary>
+    public int X { get; set; }
+    public int Y { get; set; }
+    public int Width { get; set; }
+    public int Height { get; set; }
+
+    /// <summary>展開時的高度（WPF 單位），收合中的分區要靠這個還原。</summary>
+    public double ExpandedHeight { get; set; }
 }

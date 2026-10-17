@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shell;
 using System.Windows.Threading;
 using MyFences.Models;
@@ -45,7 +46,6 @@ public partial class FenceWindow : Window
     private readonly DispatcherTimer _portalReloadTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
     private FileSystemWatcher? _portalWatcher;
     private IntPtr _hwnd;
-    private bool _loaded;
     private bool _hoverExpanded;
     private Point _dragStart;
     private FenceItem? _pressedItem;
@@ -73,7 +73,6 @@ public partial class FenceWindow : Window
         SetupPortalWatcher();
 
         SourceInitialized += (_, _) => AttachToDesktop();
-        Loaded += (_, _) => _loaded = true;
         LocationChanged += (_, _) => SaveBounds();
         SizeChanged += (_, _) => SaveBounds();
     }
@@ -116,6 +115,28 @@ public partial class FenceWindow : Window
 
         DesktopHelper.GlueToDesktop(_hwnd);
         DesktopHelper.SendToBottom(_hwnd);
+        BlurHelper.SetBlur(_hwnd, Config.Blur);
+    }
+
+    /// <summary>視窗在螢幕上的實際像素位置（多螢幕換算用）。</summary>
+    public PixelRect? GetPixelBounds()
+    {
+        if (_hwnd == IntPtr.Zero || !GetWindowRect(_hwnd, out RECT r))
+            return null;
+        return new PixelRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+    }
+
+    /// <summary>依像素位置擺放分區；收合中的分區只改位置和寬度，展開高度另外給。</summary>
+    public void ApplyPixelBounds(PixelRect rect, double expandedHeight)
+    {
+        if (_hwnd == IntPtr.Zero)
+            return;
+
+        _hoverExpanded = false;
+        Config.Height = Math.Max(MinHeight, expandedHeight);
+        SetWindowPos(_hwnd, IntPtr.Zero, rect.X, rect.Y, rect.Width, rect.Height, SWP_NOZORDER | SWP_NOACTIVATE);
+        Height = Config.RolledUp ? RolledUpHeight : Config.Height;
+        SaveBounds();
     }
 
     public void ApplyAppearance()
@@ -135,6 +156,12 @@ public partial class FenceWindow : Window
         byte titleAlpha = (byte)Math.Clamp(Config.Opacity * 255 + 50, 70, 255);
         RootBorder.Background = new SolidColorBrush(Color.FromArgb(bodyAlpha, baseColor.R, baseColor.G, baseColor.B));
         TitleBar.Background = new SolidColorBrush(Color.FromArgb(titleAlpha, baseColor.R, baseColor.G, baseColor.B));
+
+        // 毛玻璃是整個矩形視窗，圓角會露出模糊的直角，所以開毛玻璃時改成直角
+        RootBorder.CornerRadius = new CornerRadius(Config.Blur ? 0 : 6);
+        TitleBar.CornerRadius = Config.Blur ? new CornerRadius(0) : new CornerRadius(5, 5, 0, 0);
+        BlurHelper.SetBlur(_hwnd, Config.Blur);
+        UpdateFade(animate: false);
 
         TitleText.Text = Config.Name;
         IconSize = Config.IconSize;
@@ -162,7 +189,7 @@ public partial class FenceWindow : Window
 
         List<string> paths;
         if (IsStandard)
-            paths = Config.Items.ToList();
+            paths = Config.CurrentItems.ToList();
         else if (Config.FolderPath is { } folder && Directory.Exists(folder))
             paths = DesktopHelper.EnumerateVisibleEntries(folder);
         else
@@ -170,6 +197,8 @@ public partial class FenceWindow : Window
 
         foreach (string path in paths)
             _items.Add(FenceItem.Create(path));
+
+        RebuildTabs();
 
         EmptyHint.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (!IsStandard && !Directory.Exists(Config.FolderPath ?? ""))
@@ -216,7 +245,8 @@ public partial class FenceWindow : Window
 
     private void SaveBounds()
     {
-        if (!_loaded || WindowState != WindowState.Normal)
+        // 建構時設定 Left/Top 也會觸發，handle 建立前的都不算
+        if (_hwnd == IntPtr.Zero || WindowState != WindowState.Normal)
             return;
 
         Config.Left = Left;
@@ -225,6 +255,167 @@ public partial class FenceWindow : Window
         if (!Config.RolledUp && !_hoverExpanded)
             Config.Height = Height;
         App.Current.RequestSave();
+    }
+
+    /// <summary>「平常淡化」：滑鼠不在分區上時變淡。</summary>
+    private void UpdateFade(bool animate = true)
+    {
+        bool menuOpen = RootBorder.ContextMenu?.IsOpen == true;
+        double target = Config.FadeWhenIdle && !IsMouseOver && !menuOpen ? 0.3 : 1.0;
+        if (!animate)
+        {
+            BeginAnimation(OpacityProperty, null);
+            Opacity = target;
+            return;
+        }
+
+        BeginAnimation(OpacityProperty, new DoubleAnimation(target, TimeSpan.FromMilliseconds(target < 1 ? 400 : 150)));
+    }
+
+    // ───────────── 分頁 ─────────────
+
+    private static readonly Brush ActiveTabBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush InactiveTabBrush = new SolidColorBrush(Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF));
+
+    private void RebuildTabs()
+    {
+        TabStrip.Children.Clear();
+        if (!IsStandard || !Config.HasTabs)
+        {
+            TabStrip.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        TabStrip.Visibility = Visibility.Visible;
+        _ = Config.CurrentItems; // 修正超出範圍的 ActiveTab
+        for (int i = 0; i < Config.Tabs.Count; i++)
+        {
+            int index = i;
+            FenceTab tab = Config.Tabs[i];
+            var header = new Border
+            {
+                Tag = index,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 2, 8, 3),
+                Margin = new Thickness(0, 0, 4, 2),
+                Background = index == Config.ActiveTab ? ActiveTabBrush : InactiveTabBrush,
+                Cursor = Cursors.Hand,
+                AllowDrop = true,
+                ToolTip = $"{tab.Items.Count} 個項目（可以把圖示拖到這裡）",
+                Child = new TextBlock
+                {
+                    Text = tab.Name,
+                    Foreground = Brushes.White,
+                    FontSize = 12,
+                    FontWeight = index == Config.ActiveTab ? FontWeights.SemiBold : FontWeights.Normal,
+                    Effect = (System.Windows.Media.Effects.Effect)FindResource("TextShadow"),
+                },
+            };
+            header.MouseLeftButtonUp += (_, e) =>
+            {
+                SwitchTab(index);
+                e.Handled = true;
+            };
+            header.DragOver += (_, e) =>
+            {
+                e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Link : DragDropEffects.None;
+                e.Handled = true;
+            };
+            header.Drop += (_, e) =>
+            {
+                e.Handled = true;
+                if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
+                    DropOnTab(index, files);
+            };
+            TabStrip.Children.Add(header);
+        }
+    }
+
+    private void SwitchTab(int index)
+    {
+        if (index == Config.ActiveTab)
+            return;
+
+        Config.ActiveTab = index;
+        ReloadItems();
+        App.Current.RequestSave();
+    }
+
+    /// <summary>把項目丟到某個分頁（不切換過去）。</summary>
+    private void DropOnTab(int index, string[] files)
+    {
+        foreach (string file in files)
+        {
+            foreach (List<string> items in Config.AllItemLists())
+                items.RemoveAll(p => App.PathEquals(p, file));
+            App.Current.RemoveFromOtherFences(file, this);
+            Config.Tabs[index].Items.Add(file);
+        }
+
+        ReloadItems();
+        App.Current.RequestSave();
+    }
+
+    private void AddTab()
+    {
+        string? name = InputDialog.Ask("新增分頁", "分頁名稱：", $"分頁 {Math.Max(2, Config.Tabs.Count + 1)}");
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        Config.AddTab(name.Trim());
+        ReloadItems();
+        App.Current.RequestSave();
+    }
+
+    private void RenameTab(int index)
+    {
+        string? name = InputDialog.Ask("重新命名分頁", "分頁名稱：", Config.Tabs[index].Name);
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        Config.Tabs[index].Name = name.Trim();
+        RebuildTabs();
+        App.Current.RequestSave();
+    }
+
+    private void DeleteTab(int index)
+    {
+        FenceTab tab = Config.Tabs[index];
+        if (tab.Items.Count > 0)
+        {
+            var answer = MessageBox.Show(
+                $"刪除分頁「{tab.Name}」？裡面的 {tab.Items.Count} 個項目會移到旁邊的分頁。",
+                "MyFences", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+                return;
+        }
+
+        Config.RemoveTab(index);
+        ReloadItems();
+        App.Current.RequestSave();
+    }
+
+    private ContextMenu BuildTabMenu(int index)
+    {
+        var menu = new ContextMenu();
+        menu.Items.Add(MakeItem("重新命名分頁…", () => RenameTab(index)));
+        menu.Items.Add(MakeItem("刪除分頁", () => DeleteTab(index)));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MakeItem("新增分頁…", AddTab));
+        return menu;
+    }
+
+    private int? TabIndexFromSource(object source)
+    {
+        var element = source as DependencyObject;
+        while (element != null && element != TabStrip)
+        {
+            if (element is Border { Tag: int index } border && border.Parent == TabStrip)
+                return index;
+            element = element is Visual ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element);
+        }
+
+        return null;
     }
 
     private void SetupPortalWatcher()
@@ -291,10 +482,15 @@ public partial class FenceWindow : Window
         App.Current.RequestSave();
     }
 
-    private void OnMouseEnter(object sender, MouseEventArgs e) => ExpandTemporarily();
+    private void OnMouseEnter(object sender, MouseEventArgs e)
+    {
+        UpdateFade();
+        ExpandTemporarily();
+    }
 
     private void OnMouseLeave(object sender, MouseEventArgs e)
     {
+        UpdateFade();
         if (!_hoverExpanded || ItemsList.ContextMenu?.IsOpen == true || RootBorder.ContextMenu?.IsOpen == true)
             return;
 
@@ -425,19 +621,27 @@ public partial class FenceWindow : Window
 
         foreach (string file in files)
         {
-            int existing = Config.Items.FindIndex(p => App.PathEquals(p, file));
+            List<string> items = Config.CurrentItems;
+            int existing = items.FindIndex(p => App.PathEquals(p, file));
             if (existing >= 0)
             {
                 if (!fromThisFence)
                     continue;
 
                 // 同一個分區內拖曳 = 重新排序
-                Config.Items.RemoveAt(existing);
+                items.RemoveAt(existing);
                 if (existing < index)
                     index--;
             }
 
-            Config.Items.Insert(Math.Clamp(index, 0, Config.Items.Count), file);
+            // 同一個分區的其他分頁裡如果有，也拿掉（一個項目只會出現一次）
+            foreach (List<string> other in Config.AllItemLists())
+            {
+                if (other != items)
+                    other.RemoveAll(p => App.PathEquals(p, file));
+            }
+
+            items.Insert(Math.Clamp(index, 0, items.Count), file);
             index++;
             App.Current.RemoveFromOtherFences(file, this);
         }
@@ -451,12 +655,12 @@ public partial class FenceWindow : Window
         if (ItemsList.InputHitTest(e.GetPosition(ItemsList)) is DependencyObject hit &&
             ItemFromSource(hit) is { } target)
         {
-            int index = Config.Items.FindIndex(p => App.PathEquals(p, target.FullPath));
+            int index = Config.CurrentItems.FindIndex(p => App.PathEquals(p, target.FullPath));
             if (index >= 0)
                 return index;
         }
 
-        return Config.Items.Count;
+        return Config.CurrentItems.Count;
     }
 
     // ───────────── 右鍵選單 ─────────────
@@ -464,12 +668,15 @@ public partial class FenceWindow : Window
     private void OnRightButtonUp(object sender, MouseButtonEventArgs e)
     {
         FenceItem? item = ItemFromSource(e.OriginalSource);
-        ContextMenu menu = item != null ? BuildItemMenu(item) : BuildFenceMenu();
+        int? tabIndex = TabIndexFromSource(e.OriginalSource);
+        ContextMenu menu = tabIndex is { } t ? BuildTabMenu(t) : item != null ? BuildItemMenu(item) : BuildFenceMenu();
         menu.PlacementTarget = RootBorder;
         menu.Closed += (_, _) =>
         {
             if (!IsMouseOver)
                 OnMouseLeave(this, null!);
+            else
+                UpdateFade();
         };
         RootBorder.ContextMenu = menu;
         menu.IsOpen = true;
@@ -513,12 +720,15 @@ public partial class FenceWindow : Window
             .Select(s => (object)MakeItem(s.Name, () => SetIconSize(s.Size), isChecked: Math.Abs(Config.IconSize - s.Size) < 0.5))
             .ToList();
         menu.Items.Add(MakeItem("圖示大小", null, sizes));
+        menu.Items.Add(MakeItem("毛玻璃背景", ToggleBlur, isChecked: Config.Blur));
+        menu.Items.Add(MakeItem("平常淡化（滑鼠移上去才清楚）", ToggleFade, isChecked: Config.FadeWhenIdle));
 
         menu.Items.Add(MakeItem(Config.RolledUp ? "展開" : "收合（雙擊標題列）", ToggleRollUp));
         menu.Items.Add(new Separator());
 
         if (IsStandard)
         {
+            menu.Items.Add(MakeItem("新增分頁…", AddTab));
             menu.Items.Add(MakeItem("依名稱排序", SortByName));
             menu.Items.Add(MakeItem("自動整理規則…", EditRules));
             var priorities = RulePriorityPresets
@@ -534,6 +744,13 @@ public partial class FenceWindow : Window
         }
 
         menu.Items.Add(new Separator());
+        int pageCount = App.Current.Config.PageCount;
+        var pages = Enumerable.Range(0, pageCount)
+            .Select(p => (object)MakeItem($"第 {p + 1} 頁", () => App.Current.MoveFenceToPage(this, p), isChecked: Config.Page == p))
+            .Append(new Separator())
+            .Append(MakeItem("新的一頁", () => App.Current.MoveFenceToPage(this, pageCount)))
+            .ToList();
+        menu.Items.Add(MakeItem("移到桌面頁面", null, pages));
         menu.Items.Add(MakeItem("新增分區", () => App.Current.CreateFence(FenceKind.Standard)));
         menu.Items.Add(MakeItem("刪除此分區", Delete));
         return menu;
@@ -563,7 +780,7 @@ public partial class FenceWindow : Window
 
     private void RemoveItem(FenceItem item)
     {
-        Config.Items.RemoveAll(p => App.PathEquals(p, item.FullPath));
+        Config.CurrentItems.RemoveAll(p => App.PathEquals(p, item.FullPath));
         ReloadItems();
         App.Current.RequestSave();
     }
@@ -605,6 +822,20 @@ public partial class FenceWindow : Window
         SetColor(color.Trim());
     }
 
+    private void ToggleBlur()
+    {
+        Config.Blur = !Config.Blur;
+        ApplyAppearance();
+        App.Current.RequestSave();
+    }
+
+    private void ToggleFade()
+    {
+        Config.FadeWhenIdle = !Config.FadeWhenIdle;
+        UpdateFade();
+        App.Current.RequestSave();
+    }
+
     private void SetOpacity(double opacity)
     {
         Config.Opacity = opacity;
@@ -622,10 +853,12 @@ public partial class FenceWindow : Window
     private void SortByName()
     {
         var comparer = StringComparer.CurrentCultureIgnoreCase;
-        Config.Items = Config.Items
+        List<string> sorted = Config.CurrentItems
             .OrderBy(p => !Directory.Exists(p))
             .ThenBy(p => FenceItem.Create(p).DisplayName, comparer)
             .ToList();
+        Config.CurrentItems.Clear();
+        Config.CurrentItems.AddRange(sorted);
         ReloadItems();
         App.Current.RequestSave();
     }
@@ -680,7 +913,7 @@ public partial class FenceWindow : Window
 
     private void RemoveMissingItems()
     {
-        int removed = Config.Items.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p));
+        int removed = Config.AllItemLists().Sum(items => items.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p)));
         ReloadItems();
         App.Current.RequestSave();
         MessageBox.Show($"已清除 {removed} 個項目。", "MyFences");

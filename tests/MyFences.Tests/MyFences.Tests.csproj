@@ -8,8 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 規則邏輯不依賴 WPF，直接編進來測，這樣在任何平台都能跑 -->
+    <!-- 這些檔案不依賴 WPF，直接編進來測，這樣在任何平台都能跑 -->
     <Compile Include="..\..\src\MyFences\Models\FenceRules.cs" Link="FenceRules.cs" />
+    <Compile Include="..\..\src\MyFences\Models\FenceConfig.cs" Link="FenceConfig.cs" />
+    <Compile Include="..\..\src\MyFences\Models\LayoutMath.cs" Link="LayoutMath.cs" />
   </ItemGroup>
 
   <ItemGroup>

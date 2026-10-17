@@ -68,6 +68,9 @@
                            Effect="{StaticResource TextShadow}" />
             </Border>
 
+            <!-- 分區內的分頁（有 2 個以上分頁才顯示） -->
+            <WrapPanel x:Name="TabStrip" DockPanel.Dock="Top" Margin="6,4,6,0" Visibility="Collapsed" />
+
             <Grid>
                 <ListBox x:Name="ItemsList"
                          Background="Transparent"

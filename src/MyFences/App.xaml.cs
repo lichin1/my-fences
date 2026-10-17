@@ -18,6 +18,9 @@ public partial class App : Application
     private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _desktopCheckTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _dailySnapshotTimer = new() { Interval = TimeSpan.FromHours(1) };
+    private readonly DispatcherTimer _displayChangeTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
+    private List<ScreenInfo> _screens = new();
+    private PageIndicator? _pageIndicator;
     private Mutex? _mutex;
     private TrayIcon? _tray;
     private HotkeyManager? _hotkeys;
@@ -56,17 +59,35 @@ public partial class App : Application
         _saveTimer.Tick += (_, _) =>
         {
             _saveTimer.Stop();
+            RecordMonitorLayout();
             ConfigStore.Save(Config);
         };
 
+        Config.PageCount = Math.Max(Math.Max(1, Config.PageCount), Config.Fences.Select(f => f.Page + 1).DefaultIfEmpty(1).Max());
+        Config.CurrentPage = Math.Clamp(Config.CurrentPage, 0, Config.PageCount - 1);
+
         foreach (FenceConfig fence in Config.Fences)
             OpenFence(fence);
+
+        // 螢幕組合跟上次結束時不同（例如筆電拔掉外接螢幕後才開機）就換算一次位置
+        _screens = GetScreens();
+        if (Config.LastScreens.Count > 0)
+            RemapForScreens(Config.LastScreens, _screens);
+        Config.LastScreens = _screens;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        _displayChangeTimer.Tick += (_, _) =>
+        {
+            _displayChangeTimer.Stop();
+            HandleDisplayChange();
+        };
 
         _tray = new TrayIcon(this);
 
         _hotkeys = new HotkeyManager();
         if (!_hotkeys.Register(ModifierKeys.Control | ModifierKeys.Alt, Key.F, ToggleFences))
             _tray.ShowBalloon("Ctrl+Alt+F 已被其他程式占用，請改用系統匣選單顯示 / 隱藏分區。");
+        _hotkeys.Register(ModifierKeys.Control | ModifierKeys.Alt, Key.Right, () => SwitchPage(Config.CurrentPage + 1));
+        _hotkeys.Register(ModifierKeys.Control | ModifierKeys.Alt, Key.Left, () => SwitchPage(Config.CurrentPage - 1));
 
         _desktopWatcher = new DesktopWatcher(Dispatcher, OnDesktopItemCreated, OnDesktopItemRenamed);
 
@@ -94,9 +115,12 @@ public partial class App : Application
         _desktopCheckTimer.Stop();
         _dailySnapshotTimer.Stop();
         _doubleClickHook?.Dispose();
+        _displayChangeTimer.Stop();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         if (_mutex != null)
         {
             _saveTimer.Stop();
+            RecordMonitorLayout();
             ConfigStore.Save(Config);
             _mutex.ReleaseMutex();
             _mutex.Dispose();
@@ -143,6 +167,7 @@ public partial class App : Application
             Name = name,
             Kind = kind,
             FolderPath = folder,
+            Page = Config.CurrentPage,
             Left = area.Left + 60 + offset,
             Top = area.Top + 60 + offset,
         };
@@ -165,12 +190,75 @@ public partial class App : Application
     public void ToggleFences()
     {
         _fencesHidden = !_fencesHidden;
+        UpdateVisibility();
+    }
+
+    // ───────────── 桌面頁面 ─────────────
+
+    /// <summary>切到某一頁（超出範圍會繞回第一頁 / 最後一頁）。</summary>
+    public void SwitchPage(int page)
+    {
+        int count = Math.Max(1, Config.PageCount);
+        page = ((page % count) + count) % count;
+        Config.CurrentPage = page;
+        _fencesHidden = false;
+        UpdateVisibility();
+        RequestSave();
+
+        if (count > 1)
+        {
+            _pageIndicator ??= new PageIndicator();
+            _pageIndicator.ShowMessage($"第 {page + 1} / {count} 頁");
+        }
+    }
+
+    public void AddPage()
+    {
+        Config.PageCount++;
+        SwitchPage(Config.PageCount - 1);
+    }
+
+    /// <summary>刪除目前頁面，上面的分區移到前一頁（不會刪除分區）。</summary>
+    public void RemoveCurrentPage()
+    {
+        if (Config.PageCount <= 1)
+            return;
+
+        int current = Config.CurrentPage;
+        int target = Math.Max(0, current - 1);
+        foreach (FenceConfig fence in Config.Fences)
+        {
+            if (fence.Page == current)
+                fence.Page = target;
+            else if (fence.Page > current)
+                fence.Page--;
+        }
+
+        Config.PageCount--;
+        SwitchPage(target);
+    }
+
+    public void MoveFenceToPage(FenceWindow window, int page)
+    {
+        if (page >= Config.PageCount)
+            Config.PageCount = page + 1;
+
+        window.Config.Page = page;
+        UpdateVisibility();
+        RequestSave();
+    }
+
+    private bool ShouldShow(FenceWindow window) => !_fencesHidden && window.Config.Page == Config.CurrentPage;
+
+    private void UpdateVisibility()
+    {
         foreach (FenceWindow window in _windows)
         {
-            if (_fencesHidden)
-                window.Hide();
-            else
+            bool show = ShouldShow(window);
+            if (show && !window.IsVisible)
                 window.Show();
+            else if (!show && window.IsVisible)
+                window.Hide();
         }
     }
 
@@ -223,6 +311,7 @@ public partial class App : Application
         }
 
         Config.Fences = snapshot.Fences;
+        Config.PageCount = Math.Max(Config.PageCount, Config.Fences.Select(f => f.Page + 1).DefaultIfEmpty(1).Max());
         if (_fencesHidden)
             ToggleFences();
         foreach (FenceConfig fence in Config.Fences)
@@ -248,7 +337,7 @@ public partial class App : Application
             if (target == null)
                 continue;
 
-            target.Config.Items.Add(path);
+            target.Config.CurrentItems.Add(path);
             touched.Add(target);
             count++;
         }
@@ -268,7 +357,10 @@ public partial class App : Application
             if (window == except || window.Config.Kind != FenceKind.Standard)
                 continue;
 
-            if (window.Config.Items.RemoveAll(p => PathEquals(p, path)) > 0)
+            int removed = 0;
+            foreach (List<string> items in window.Config.AllItemLists())
+                removed += items.RemoveAll(p => PathEquals(p, path));
+            if (removed > 0)
                 window.ReloadItems();
         }
     }
@@ -276,7 +368,7 @@ public partial class App : Application
     public static bool PathEquals(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     private bool IsInAnyFence(string path) =>
-        Config.Fences.Any(f => f.Kind == FenceKind.Standard && f.Items.Any(p => PathEquals(p, path)));
+        Config.Fences.Any(f => f.Kind == FenceKind.Standard && f.AllItemLists().Any(items => items.Any(p => PathEquals(p, path))));
 
     private FenceWindow OpenFence(FenceConfig config)
     {
@@ -289,7 +381,9 @@ public partial class App : Application
                 Dispatcher.InvokeAsync(() => OpenFence(config), DispatcherPriority.Background);
         };
         _windows.Add(window);
-        if (!_fencesHidden)
+        // 先建立視窗 handle（即使不在目前頁面），多螢幕換算才拿得到位置
+        new System.Windows.Interop.WindowInteropHelper(window).EnsureHandle();
+        if (ShouldShow(window))
             window.Show();
         return window;
     }
@@ -305,14 +399,16 @@ public partial class App : Application
         bool updated = false;
         foreach (FenceWindow window in _windows)
         {
-            List<string> items = window.Config.Items;
-            int index = items.FindIndex(p => PathEquals(p, oldPath));
-            if (index < 0)
-                continue;
+            foreach (List<string> items in window.Config.AllItemLists())
+            {
+                int index = items.FindIndex(p => PathEquals(p, oldPath));
+                if (index < 0)
+                    continue;
 
-            items[index] = newPath;
-            window.ReloadItems();
-            updated = true;
+                items[index] = newPath;
+                window.ReloadItems();
+                updated = true;
+            }
         }
 
         if (updated)
@@ -341,6 +437,102 @@ public partial class App : Application
         catch (Exception)
         {
             // 自動快照失敗不打擾使用者，下個小時會再試
+        }
+    }
+
+    // ───────────── 多螢幕 / 解析度 ─────────────
+
+    private static List<ScreenInfo> GetScreens() =>
+        System.Windows.Forms.Screen.AllScreens
+            .Select(s => new ScreenInfo(
+                s.DeviceName,
+                new PixelRect(s.WorkingArea.X, s.WorkingArea.Y, s.WorkingArea.Width, s.WorkingArea.Height),
+                s.Primary))
+            .ToList();
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        // 螢幕設定變更時會連續觸發好幾次，等穩定下來再處理
+        Dispatcher.InvokeAsync(() =>
+        {
+            _displayChangeTimer.Stop();
+            _displayChangeTimer.Start();
+        });
+    }
+
+    private void HandleDisplayChange()
+    {
+        List<ScreenInfo> newScreens = GetScreens();
+        if (LayoutMath.ProfileKey(newScreens) == LayoutMath.ProfileKey(_screens))
+            return;
+
+        RemapForScreens(_screens, newScreens);
+        _screens = newScreens;
+        Config.LastScreens = newScreens;
+        RecordMonitorLayout();
+        RequestSave();
+    }
+
+    /// <summary>
+    /// 螢幕組合從 oldScreens 變成 newScreens：這組螢幕以前用過就還原當時的版面，
+    /// 沒用過就從舊版面等比例換算。
+    /// </summary>
+    private void RemapForScreens(List<ScreenInfo> oldScreens, List<ScreenInfo> newScreens)
+    {
+        string oldKey = LayoutMath.ProfileKey(oldScreens);
+        string newKey = LayoutMath.ProfileKey(newScreens);
+        if (oldKey == newKey)
+            return;
+
+        Config.MonitorLayouts.TryGetValue(newKey, out Dictionary<string, SavedBounds>? saved);
+        Config.MonitorLayouts.TryGetValue(oldKey, out Dictionary<string, SavedBounds>? previous);
+
+        foreach (FenceWindow window in _windows)
+        {
+            string id = window.Config.Id;
+            if (saved != null && saved.TryGetValue(id, out SavedBounds? known))
+            {
+                window.ApplyPixelBounds(new PixelRect(known.X, known.Y, known.Width, known.Height), known.ExpandedHeight);
+                continue;
+            }
+
+            // Windows 可能已經自己把視窗挪過位置，優先用變更前記下來的位置來換算
+            PixelRect? source = previous != null && previous.TryGetValue(id, out SavedBounds? before)
+                ? new PixelRect(before.X, before.Y, before.Width, before.Height)
+                : window.GetPixelBounds();
+            if (source is not { } from)
+                continue;
+
+            PixelRect to = LayoutMath.Remap(from, oldScreens, newScreens);
+            double scaleY = from.Height == 0 ? 1 : (double)to.Height / from.Height;
+            window.ApplyPixelBounds(to, window.Config.Height * scaleY);
+        }
+    }
+
+    /// <summary>記下目前螢幕組合下每個分區的位置。</summary>
+    private void RecordMonitorLayout()
+    {
+        if (_screens.Count == 0)
+            return;
+
+        // 螢幕已經變了但還沒換算完，先不要記，免得把被 Windows 挪亂的位置存成舊組合的版面
+        string key = LayoutMath.ProfileKey(_screens);
+        if (key != LayoutMath.ProfileKey(GetScreens()))
+            return;
+
+        if (!Config.MonitorLayouts.TryGetValue(key, out Dictionary<string, SavedBounds>? layout))
+            Config.MonitorLayouts[key] = layout = new Dictionary<string, SavedBounds>();
+
+        layout.Clear();
+        foreach (FenceWindow window in _windows)
+        {
+            if (window.GetPixelBounds() is { } r)
+            {
+                layout[window.Config.Id] = new SavedBounds
+                {
+                    X = r.X, Y = r.Y, Width = r.Width, Height = r.Height, ExpandedHeight = window.Config.Height,
+                };
+            }
         }
     }
 

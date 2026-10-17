@@ -25,6 +25,7 @@ internal sealed class TrayIcon : IDisposable
             ShowBalloon(count > 0 ? $"已放入 {count} 個項目。" : "沒有符合規則的新項目。");
         });
         menu.Items.Add(BuildSnapshotMenu(app));
+        menu.Items.Add(BuildPagesMenu(app));
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add("顯示 / 隱藏所有分區\tCtrl+Alt+F", null, (_, _) => app.ToggleFences());
@@ -75,6 +76,32 @@ internal sealed class TrayIcon : IDisposable
             Visible = true,
         };
         _icon.DoubleClick += (_, _) => app.ToggleFences();
+    }
+
+    /// <summary>桌面頁面子選單。</summary>
+    private static ToolStripMenuItem BuildPagesMenu(App app)
+    {
+        var root = new ToolStripMenuItem("桌面頁面");
+        root.DropDownItems.Add("(載入中)");
+        root.DropDownOpening += (_, _) =>
+        {
+            root.DropDownItems.Clear();
+            for (int i = 0; i < app.Config.PageCount; i++)
+            {
+                int page = i;
+                var item = new ToolStripMenuItem($"第 {page + 1} 頁") { Checked = page == app.Config.CurrentPage };
+                item.Click += (_, _) => app.SwitchPage(page);
+                root.DropDownItems.Add(item);
+            }
+
+            root.DropDownItems.Add(new ToolStripSeparator());
+            root.DropDownItems.Add("新增頁面", null, (_, _) => app.AddPage());
+            var remove = new ToolStripMenuItem("刪除目前頁面（分區移到前一頁）") { Enabled = app.Config.PageCount > 1 };
+            remove.Click += (_, _) => app.RemoveCurrentPage();
+            root.DropDownItems.Add(remove);
+            root.DropDownItems.Add(new ToolStripMenuItem("Ctrl+Alt+← / → 切換頁面") { Enabled = false });
+        };
+        return root;
     }
 
     /// <summary>快照子選單：每次打開時重新列出快照。</summary>

@@ -69,6 +69,44 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    public const int WCA_ACCENT_POLICY = 19;
+    public const int ACCENT_DISABLED = 0;
+    public const int ACCENT_ENABLE_BLURBEHIND = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ACCENT_POLICY
+    {
+        public int AccentState;
+        public int AccentFlags;
+        public uint GradientColor;
+        public int AnimationId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WINDOWCOMPOSITIONATTRIBDATA
+    {
+        public int Attrib;
+        public IntPtr pvData;
+        public int cbData;
+    }
+
+    /// <summary>未公開但 Windows 10 / 11 都有的 API，用來開毛玻璃。</summary>
+    [DllImport("user32.dll")]
+    public static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WINDOWCOMPOSITIONATTRIBDATA data);
+
     [DllImport("user32.dll")]
     public static extern uint GetDoubleClickTime();
 
