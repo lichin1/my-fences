@@ -113,7 +113,7 @@ public sealed class FenceRulesTests : IDisposable
     public void Invalid_conditions_are_reported()
     {
         Assert.Empty(FenceRules.FindInvalidConditions(new[] { "pdf", ".lnk", "folder", "*", "name:報表", "newer:7+larger:1.5" }));
-        Assert.Equal(new[] { "newer:abc", "size:5", "older:" },
-            FenceRules.FindInvalidConditions(new[] { "pdf+newer:abc", "size:5", "older:" }));
+        Assert.Equal(new[] { "newer:abc", "size:5", "older:", "p*f" },
+            FenceRules.FindInvalidConditions(new[] { "pdf+newer:abc", "size:5", "older:", "p*f" }));
     }
 }

@@ -22,6 +22,9 @@ namespace MyFences.Models;
 /// </summary>
 public static class FenceRules
 {
+    /// <summary>Windows 檔名不能用的字元（固定寫死，測試在 Linux 上跑結果也一樣）。</summary>
+    private static readonly char[] InvalidExtensionChars = { '<', '>', ':', '"', '/', '\\', '|', '?', '*' };
+
     public static bool Matches(IEnumerable<string> rules, string path, DateTime? now = null)
     {
         var item = new ItemInfo(path, now ?? DateTime.Now);
@@ -71,7 +74,8 @@ public static class FenceRules
         (string key, string value) = SplitKey(condition);
         return key switch
         {
-            "" => value.Length > 0 && value.IndexOfAny(Path.GetInvalidFileNameChars()) < 0,
+            // * 在 Windows 是不合法的檔名字元，要先當成特殊規則放行
+            "" => value is "*" or "folder" || (value.Length > 0 && value.IndexOfAny(InvalidExtensionChars) < 0),
             "name" => value.Length > 0,
             "newer" or "older" or "larger" or "smaller" => TryParseNumber(value, out _),
             _ => false,
