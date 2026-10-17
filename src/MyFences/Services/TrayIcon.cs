@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Drawing;
 using System.Windows.Forms;
 using MyFences.Models;
@@ -19,12 +21,16 @@ internal sealed class TrayIcon : IDisposable
         menu.Items.Add("新增資料夾分區…", null, (_, _) => app.CreateFence(FenceKind.Folder));
         menu.Items.Add("依規則整理桌面", null, (_, _) =>
         {
-            int count = app.ApplyRules(DesktopHelper.EnumerateDesktopItems());
+            int count = app.SortDesktop();
             ShowBalloon(count > 0 ? $"已放入 {count} 個項目。" : "沒有符合規則的新項目。");
         });
+        menu.Items.Add(BuildSnapshotMenu(app));
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add("顯示 / 隱藏所有分區\tCtrl+Alt+F", null, (_, _) => app.ToggleFences());
+
+        var quickHide = new ToolStripMenuItem("雙擊桌面空白處隱藏分區");
+        quickHide.Click += (_, _) => app.SetQuickHide(!app.Config.QuickHideEnabled);
 
         var hideIcons = new ToolStripMenuItem("隱藏系統桌面圖示");
         hideIcons.Click += (_, _) => DesktopHelper.SetDesktopIconsVisible(!DesktopHelper.AreDesktopIconsVisible());
@@ -42,6 +48,7 @@ internal sealed class TrayIcon : IDisposable
         var autoStart = new ToolStripMenuItem("開機時啟動");
         autoStart.Click += (_, _) => StartupHelper.SetEnabled(!StartupHelper.IsEnabled);
 
+        menu.Items.Add(quickHide);
         menu.Items.Add(hideIcons);
         menu.Items.Add(locked);
         menu.Items.Add(autoSort);
@@ -53,6 +60,7 @@ internal sealed class TrayIcon : IDisposable
 
         menu.Opening += (_, _) =>
         {
+            quickHide.Checked = app.Config.QuickHideEnabled;
             hideIcons.Checked = !DesktopHelper.AreDesktopIconsVisible();
             locked.Checked = app.Config.Locked;
             autoSort.Checked = app.Config.AutoSortNewItems;
@@ -67,6 +75,57 @@ internal sealed class TrayIcon : IDisposable
             Visible = true,
         };
         _icon.DoubleClick += (_, _) => app.ToggleFences();
+    }
+
+    /// <summary>快照子選單：每次打開時重新列出快照。</summary>
+    private ToolStripMenuItem BuildSnapshotMenu(App app)
+    {
+        var root = new ToolStripMenuItem("快照");
+        root.DropDownItems.Add("(載入中)");
+        root.DropDownOpening += (_, _) =>
+        {
+            root.DropDownItems.Clear();
+            root.DropDownItems.Add("建立快照…", null, (_, _) =>
+            {
+                string? name = Views.InputDialog.Ask("建立快照", "快照名稱：", DateTime.Now.ToString("yyyy/MM/dd HH:mm"));
+                if (name != null && app.CreateSnapshot(name.Trim(), SnapshotKind.Manual) != null)
+                    ShowBalloon("已建立快照。");
+            });
+            root.DropDownItems.Add(new ToolStripSeparator());
+
+            List<Snapshot> snapshots = SnapshotStore.List();
+            if (snapshots.Count == 0)
+                root.DropDownItems.Add(new ToolStripMenuItem("（還沒有快照）") { Enabled = false });
+
+            foreach (Snapshot snapshot in snapshots.Take(20))
+            {
+                string kind = snapshot.Kind switch
+                {
+                    SnapshotKind.Daily => "每日",
+                    SnapshotKind.Backup => "自動備份",
+                    _ => "手動",
+                };
+                var item = new ToolStripMenuItem($"{snapshot.CreatedAt:MM/dd HH:mm}  {snapshot.Name}（{kind}，{snapshot.Fences.Count} 個分區）");
+                item.DropDownItems.Add("還原這個快照", null, (_, _) =>
+                {
+                    var answer = System.Windows.MessageBox.Show(
+                        $"要還原「{snapshot.Name}」嗎？\n目前的分區會被換掉（還原前會自動備份一份）。",
+                        "MyFences", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+                    if (answer == System.Windows.MessageBoxResult.Yes)
+                        app.RestoreSnapshot(snapshot);
+                });
+                item.DropDownItems.Add("刪除", null, (_, _) => SnapshotStore.Delete(snapshot));
+                root.DropDownItems.Add(item);
+            }
+
+            root.DropDownItems.Add(new ToolStripSeparator());
+            root.DropDownItems.Add("開啟快照資料夾", null, (_, _) =>
+            {
+                System.IO.Directory.CreateDirectory(SnapshotStore.SnapshotDirectory);
+                Process.Start(new ProcessStartInfo(SnapshotStore.SnapshotDirectory) { UseShellExecute = true });
+            });
+        };
+        return root;
     }
 
     public void ShowBalloon(string text) => _icon.ShowBalloonTip(3000, "MyFences", text, ToolTipIcon.Info);

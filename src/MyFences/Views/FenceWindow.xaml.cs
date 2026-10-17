@@ -38,6 +38,7 @@ public partial class FenceWindow : Window
     };
 
     private static readonly double[] OpacityPresets = { 0.0, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0 };
+    private static readonly (string Name, int Value)[] RulePriorityPresets = { ("高（先比對）", 1), ("一般", 0), ("低（最後比對）", -1) };
     private static readonly (string Name, double Size)[] IconSizePresets = { ("小", 32), ("中", 48), ("大", 64) };
 
     private readonly ObservableCollection<FenceItem> _items = new();
@@ -520,6 +521,10 @@ public partial class FenceWindow : Window
         {
             menu.Items.Add(MakeItem("依名稱排序", SortByName));
             menu.Items.Add(MakeItem("自動整理規則…", EditRules));
+            var priorities = RulePriorityPresets
+                .Select(p => (object)MakeItem(p.Name, () => SetRulePriority(p.Value), isChecked: Config.RulePriority == p.Value))
+                .ToList();
+            menu.Items.Add(MakeItem("規則優先順序", null, priorities));
             menu.Items.Add(MakeItem("清除已不存在的項目", RemoveMissingItems));
         }
         else
@@ -627,21 +632,50 @@ public partial class FenceWindow : Window
 
     private void EditRules()
     {
-        string? text = InputDialog.Ask(
-            "自動整理規則",
-            "桌面上符合這些規則的項目會自動放進這個分區。\n" +
-            "用逗號分隔副檔名，例如：.lnk, .url, pdf\n" +
-            "folder = 資料夾，* = 所有檔案；留白 = 不自動整理",
-            string.Join(", ", Config.Rules));
-        if (text == null)
+        string current = string.Join(", ", Config.Rules);
+        while (true)
+        {
+            string? text = InputDialog.Ask(
+                "自動整理規則",
+                "桌面上符合規則的項目會自動放進這個分區。多條規則用逗號分隔，留白 = 不自動整理。\n\n" +
+                "  pdf 或 .pdf　副檔名\n" +
+                "  folder　　　資料夾\n" +
+                "  *　　　　　所有檔案\n" +
+                "  name:報表　 檔名包含「報表」（可用 * 萬用字元）\n" +
+                "  newer:7　　 7 天內修改過\n" +
+                "  older:30　　超過 30 天沒動\n" +
+                "  larger:100　大於 100 MB；smaller:1　小於 1 MB\n\n" +
+                "用 + 表示「而且」，例如：pdf+name:發票, xlsx+newer:7",
+                current);
+            if (text == null)
+                return;
+
+            List<string> rules = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            List<string> invalid = FenceRules.FindInvalidConditions(rules);
+            if (invalid.Count > 0)
+            {
+                MessageBox.Show("看不懂這些規則：\n" + string.Join("\n", invalid), "MyFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+                current = text;
+                continue;
+            }
+
+            Config.Rules = rules;
+            break;
+        }
+
+        App.Current.RequestSave();
+        if (Config.Rules.Count == 0)
             return;
 
-        Config.Rules = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-        App.Current.RequestSave();
-
-        int count = App.Current.ApplyRules(DesktopHelper.EnumerateDesktopItems());
+        int count = App.Current.SortDesktop();
         if (count > 0)
             MessageBox.Show($"已依新規則放入 {count} 個項目。", "MyFences");
+    }
+
+    private void SetRulePriority(int priority)
+    {
+        Config.RulePriority = priority;
+        App.Current.RequestSave();
     }
 
     private void RemoveMissingItems()

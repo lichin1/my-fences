@@ -17,10 +17,12 @@ public partial class App : Application
     private readonly List<FenceWindow> _windows = new();
     private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _desktopCheckTimer = new() { Interval = TimeSpan.FromSeconds(5) };
+    private readonly DispatcherTimer _dailySnapshotTimer = new() { Interval = TimeSpan.FromHours(1) };
     private Mutex? _mutex;
     private TrayIcon? _tray;
     private HotkeyManager? _hotkeys;
     private DesktopWatcher? _desktopWatcher;
+    private DesktopDoubleClickHook? _doubleClickHook;
     private IntPtr _progman;
     private bool _fencesHidden;
 
@@ -73,6 +75,12 @@ public partial class App : Application
         _desktopCheckTimer.Tick += (_, _) => CheckDesktopRestarted();
         _desktopCheckTimer.Start();
 
+        _doubleClickHook = new DesktopDoubleClickHook(Dispatcher, OnDesktopDoubleClick) { Enabled = Config.QuickHideEnabled };
+
+        TryEnsureDailySnapshot();
+        _dailySnapshotTimer.Tick += (_, _) => TryEnsureDailySnapshot();
+        _dailySnapshotTimer.Start();
+
         if (!File.Exists(ConfigStore.ConfigPath))
         {
             ConfigStore.Save(Config);
@@ -84,6 +92,8 @@ public partial class App : Application
     {
         IsExiting = true;
         _desktopCheckTimer.Stop();
+        _dailySnapshotTimer.Stop();
+        _doubleClickHook?.Dispose();
         if (_mutex != null)
         {
             _saveTimer.Stop();
@@ -172,6 +182,54 @@ public partial class App : Application
         RequestSave();
     }
 
+    public void SetQuickHide(bool enabled)
+    {
+        Config.QuickHideEnabled = enabled;
+        if (_doubleClickHook != null)
+            _doubleClickHook.Enabled = enabled;
+        RequestSave();
+    }
+
+    /// <summary>依規則整理整個桌面；整理前先自動備份一份快照。</summary>
+    public int SortDesktop()
+    {
+        CreateSnapshot("整理桌面前自動備份", SnapshotKind.Backup);
+        return ApplyRules(DesktopHelper.EnumerateDesktopItems());
+    }
+
+    public Snapshot? CreateSnapshot(string name, SnapshotKind kind)
+    {
+        try
+        {
+            return SnapshotStore.Create(Config, name, kind);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("建立快照失敗：" + ex.Message, "MyFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+    }
+
+    /// <summary>還原快照：換掉所有分區（還原前先備份目前狀態，還原錯了可以再還原回來）。</summary>
+    public void RestoreSnapshot(Snapshot snapshot)
+    {
+        if (CreateSnapshot("還原快照前自動備份", SnapshotKind.Backup) == null)
+            return;
+
+        foreach (FenceWindow window in _windows.ToList())
+        {
+            _windows.Remove(window);
+            window.CloseIntentionally();
+        }
+
+        Config.Fences = snapshot.Fences;
+        if (_fencesHidden)
+            ToggleFences();
+        foreach (FenceConfig fence in Config.Fences)
+            OpenFence(fence);
+        RequestSave();
+    }
+
     /// <summary>把還沒在任何分區裡的項目，依各分區的規則放進去。回傳放入的數量。</summary>
     public int ApplyRules(IEnumerable<string> paths)
     {
@@ -182,7 +240,11 @@ public partial class App : Application
             if (IsInAnyFence(path))
                 continue;
 
-            FenceWindow? target = _windows.FirstOrDefault(w => w.Config.Kind == FenceKind.Standard && w.Config.Matches(path));
+            // 優先順序高的分區先比對；同順序就照建立順序
+            FenceWindow? target = _windows
+                .Where(w => w.Config.Kind == FenceKind.Standard)
+                .OrderByDescending(w => w.Config.RulePriority)
+                .FirstOrDefault(w => w.Config.Matches(path));
             if (target == null)
                 continue;
 
@@ -257,6 +319,29 @@ public partial class App : Application
             RequestSave();
         else
             OnDesktopItemCreated(newPath);
+    }
+
+    private void OnDesktopDoubleClick()
+    {
+        ToggleFences();
+        if (_fencesHidden && !Config.QuickHideHintShown)
+        {
+            Config.QuickHideHintShown = true;
+            RequestSave();
+            _tray?.ShowBalloon("你剛剛雙擊了桌面空白處，分區已隱藏。再雙擊一次就會出現。\n不想要這個功能，可以在系統匣選單關掉。");
+        }
+    }
+
+    private void TryEnsureDailySnapshot()
+    {
+        try
+        {
+            SnapshotStore.EnsureDailySnapshot(Config);
+        }
+        catch (Exception)
+        {
+            // 自動快照失敗不打擾使用者，下個小時會再試
+        }
     }
 
     private void CheckDesktopRestarted()

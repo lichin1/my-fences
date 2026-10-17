@@ -8,7 +8,7 @@ namespace MyFences.Services;
 
 internal static class ConfigStore
 {
-    private static readonly JsonSerializerOptions Options = new()
+    internal static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
@@ -27,7 +27,7 @@ internal static class ConfigStore
         try
         {
             string json = File.ReadAllText(ConfigPath);
-            return JsonSerializer.Deserialize<AppConfig>(json, Options) ?? AppConfig.CreateDefault();
+            return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? AppConfig.CreateDefault();
         }
         catch (Exception)
         {
@@ -42,7 +42,7 @@ internal static class ConfigStore
     {
         Directory.CreateDirectory(ConfigDirectory);
         string tmp = ConfigPath + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(config, Options));
+        File.WriteAllText(tmp, JsonSerializer.Serialize(config, JsonOptions));
         File.Move(tmp, ConfigPath, overwrite: true);
     }
 }

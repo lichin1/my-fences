@@ -1,9 +1,13 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyFences", "src\MyFences\MyFences.csproj", "{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{B0D18648-126C-4358-BFA9-7790E0159284}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyFences.Tests", "tests\MyFences.Tests\MyFences.Tests.csproj", "{F990696B-F9C2-4168-BEEE-649264A9B2F0}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,5 +19,12 @@ Global
 		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F990696B-F9C2-4168-BEEE-649264A9B2F0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F990696B-F9C2-4168-BEEE-649264A9B2F0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F990696B-F9C2-4168-BEEE-649264A9B2F0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F990696B-F9C2-4168-BEEE-649264A9B2F0}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{F990696B-F9C2-4168-BEEE-649264A9B2F0} = {B0D18648-126C-4358-BFA9-7790E0159284}
 	EndGlobalSection
 EndGlobal

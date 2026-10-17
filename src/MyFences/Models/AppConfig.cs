@@ -13,6 +13,12 @@ public sealed class AppConfig
     /// <summary>桌面出現新檔案時，自動依規則放進分區。</summary>
     public bool AutoSortNewItems { get; set; } = true;
 
+    /// <summary>雙擊桌面空白處隱藏 / 顯示所有分區。</summary>
+    public bool QuickHideEnabled { get; set; } = true;
+
+    /// <summary>第一次觸發雙擊隱藏時提示過了沒。</summary>
+    public bool QuickHideHintShown { get; set; }
+
     public static AppConfig CreateDefault()
     {
         var config = new AppConfig();
