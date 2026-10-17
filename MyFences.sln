@@ -1,0 +1,19 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyFences", "src\MyFences\MyFences.csproj", "{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6F1C7C5E-3B7A-4E52-9C1D-2A8E4B6D0F11}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
