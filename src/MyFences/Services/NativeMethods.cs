@@ -13,6 +13,9 @@ internal static class NativeMethods
     public const int WM_COMMAND = 0x0111;
     public const int WM_HOTKEY = 0x0312;
     public const int WM_WINDOWPOSCHANGING = 0x0046;
+    public const int WM_SIZING = 0x0214;
+    public const int WM_MOVING = 0x0216;
+    public const int WM_EXITSIZEMOVE = 0x0232;
 
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
@@ -23,7 +26,9 @@ internal static class NativeMethods
     public const uint MOD_NOREPEAT = 0x4000;
 
     public const int WH_MOUSE_LL = 14;
+    public const int WM_MOUSEMOVE = 0x0200;
     public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_LBUTTONUP = 0x0202;
     public const int LVM_GETSELECTEDCOUNT = 0x1032;
     public const int SM_CXDOUBLECLK = 36;
     public const int SM_CYDOUBLECLK = 37;
@@ -110,6 +115,9 @@ internal static class NativeMethods
     /// <summary>未公開但 Windows 10 / 11 都有的 API，用來開毛玻璃。</summary>
     [DllImport("user32.dll")]
     public static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WINDOWCOMPOSITIONATTRIBDATA data);
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
 
     [DllImport("user32.dll")]
     public static extern uint GetDoubleClickTime();

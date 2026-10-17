@@ -54,7 +54,7 @@ public sealed class AppConfig
             Name = "資料夾",
             Left = 420,
             Top = 40,
-            Color = "#1F4E79",
+            Color = "accent",
             Rules = { "folder" },
         });
         config.Fences.Add(new FenceConfig
@@ -62,7 +62,6 @@ public sealed class AppConfig
             Name = "文件",
             Left = 40,
             Top = 310,
-            Color = "#2E5E3A",
             Rules = { ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".md" },
         });
         return config;

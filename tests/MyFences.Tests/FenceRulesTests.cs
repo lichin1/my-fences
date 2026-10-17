@@ -117,3 +117,87 @@ public sealed class FenceRulesTests : IDisposable
             FenceRules.FindInvalidConditions(new[] { "pdf+newer:abc", "size:5", "older:", "p*f" }));
     }
 }
+
+public sealed class FenceRuleEditingTests
+{
+    [Fact]
+    public void Parse_and_format_round_trip()
+    {
+        foreach (string rule in new[] { "pdf", "folder", "*", "pdf+name:發票", "xlsx+newer:7", "older:30+larger:1.5", "smaller:1" })
+            Assert.Equal(rule, FenceRules.FormatRule(FenceRules.ParseRule(rule)));
+    }
+
+    [Fact]
+    public void Parse_normalizes_extensions_and_skips_bad_conditions()
+    {
+        var conditions = FenceRules.ParseRule(".PDF+newer:abc+name:報表");
+
+        Assert.Equal(new[]
+        {
+            new RuleCondition(RuleConditionKind.Extension, "pdf"),
+            new RuleCondition(RuleConditionKind.NameContains, "報表"),
+        }, conditions);
+    }
+
+    [Theory]
+    [InlineData(RuleConditionKind.NewerThanDays, "abc")]
+    [InlineData(RuleConditionKind.Extension, "")]
+    [InlineData(RuleConditionKind.Extension, ".")]
+    [InlineData(RuleConditionKind.NameContains, "a+b")]
+    [InlineData(RuleConditionKind.LargerThanMb, "-1")]
+    public void Format_rejects_invalid_values(RuleConditionKind kind, string value)
+    {
+        Assert.Null(FenceRules.FormatRule(new[] { new RuleCondition(kind, value) }));
+    }
+
+    [Fact]
+    public void Format_of_empty_list_is_null_and_describe_reads_naturally()
+    {
+        Assert.Null(FenceRules.FormatRule(Array.Empty<RuleCondition>()));
+        Assert.Equal("檔名包含「發票」", FenceRules.Describe(new RuleCondition(RuleConditionKind.NameContains, "發票")));
+        Assert.False(FenceRules.NeedsValue(RuleConditionKind.Folder));
+    }
+}
+
+public sealed class FenceRuleGroupTests
+{
+    [Fact]
+    public void Several_extensions_in_one_row_expand_to_separate_rules()
+    {
+        var rules = FenceRules.ExpandGroup(new[] { new RuleCondition(RuleConditionKind.Extension, "jpg, png 、gif") });
+
+        Assert.Equal(new[] { "jpg", "png", "gif" }, rules);
+    }
+
+    [Fact]
+    public void Extensions_combined_with_other_conditions_expand_as_and()
+    {
+        var rules = FenceRules.ExpandGroup(new[]
+        {
+            new RuleCondition(RuleConditionKind.Extension, "pdf xlsx"),
+            new RuleCondition(RuleConditionKind.NameContains, "發票"),
+        });
+
+        Assert.Equal(new[] { "pdf+name:發票", "xlsx+name:發票" }, rules);
+    }
+
+    [Fact]
+    public void Invalid_or_empty_values_make_the_group_invalid()
+    {
+        Assert.Null(FenceRules.ExpandGroup(new[] { new RuleCondition(RuleConditionKind.Extension, "  ") }));
+        Assert.Null(FenceRules.ExpandGroup(new[] { new RuleCondition(RuleConditionKind.NewerThanDays, "x") }));
+    }
+
+    [Fact]
+    public void Single_extension_rules_are_merged_for_editing_and_round_trip()
+    {
+        string[] stored = { ".lnk", "url", "pdf+name:發票", "folder" };
+
+        var groups = FenceRules.GroupForEditing(stored);
+
+        Assert.Equal(3, groups.Count);
+        Assert.Equal(new RuleCondition(RuleConditionKind.Extension, "lnk url"), Assert.Single(groups[0]));
+        var roundTrip = groups.SelectMany(g => FenceRules.ExpandGroup(g)!).ToList();
+        Assert.Equal(new[] { "lnk", "url", "pdf+name:發票", "folder" }, roundTrip);
+    }
+}

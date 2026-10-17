@@ -78,6 +78,91 @@ public static class LayoutMath
         return new PixelRect(x, y, width, height);
     }
 
+    /// <summary>
+    /// 拖曳 / 縮放分區時的吸附：靠近螢幕邊緣、其他分區的邊（對齊或並排、留 gap 間距）就吸過去。
+    /// edges = All 是移動（保持大小）；否則是縮放，只吸附正在拖的那幾個邊。
+    /// 回傳吸附後的矩形，以及要畫對齊線的位置（沒吸附就是 null）。
+    /// </summary>
+    public static SnapResult Snap(
+        PixelRect rect, IReadOnlyList<PixelRect> others, PixelRect area, SnapEdges edges,
+        int threshold = 10, int gap = 8)
+    {
+        bool move = edges == SnapEdges.All;
+        int left = rect.X, top = rect.Y, right = rect.Right, bottom = rect.Bottom;
+
+        // 只考慮另一個軸向上靠得夠近的分區，免得跟畫面另一頭的分區對齊
+        const int nearby = 200;
+        var nearX = others.Where(o => o.Y - nearby < bottom && o.Bottom + nearby > top).ToList();
+        var nearY = others.Where(o => o.X - nearby < right && o.Right + nearby > left).ToList();
+
+        var leftTargets = new List<int> { area.X };
+        var rightTargets = new List<int> { area.Right };
+        var topTargets = new List<int> { area.Y };
+        var bottomTargets = new List<int> { area.Bottom };
+        foreach (PixelRect o in nearX)
+        {
+            leftTargets.AddRange(new[] { o.X, o.Right + gap });
+            rightTargets.AddRange(new[] { o.Right, o.X - gap });
+        }
+
+        foreach (PixelRect o in nearY)
+        {
+            topTargets.AddRange(new[] { o.Y, o.Bottom + gap });
+            bottomTargets.AddRange(new[] { o.Bottom, o.Y - gap });
+        }
+
+        (int? dx, int? guideX) = Best(
+            (edges & SnapEdges.Left) != 0 ? (left, leftTargets) : null,
+            (edges & SnapEdges.Right) != 0 ? (right, rightTargets) : null,
+            threshold);
+        (int? dy, int? guideY) = Best(
+            (edges & SnapEdges.Top) != 0 ? (top, topTargets) : null,
+            (edges & SnapEdges.Bottom) != 0 ? (bottom, bottomTargets) : null,
+            threshold);
+
+        if (move)
+        {
+            return new SnapResult(
+                new PixelRect(rect.X + (dx ?? 0), rect.Y + (dy ?? 0), rect.Width, rect.Height), guideX, guideY);
+        }
+
+        // 縮放：只動正在拖的邊
+        if (dx is { } ddx)
+        {
+            if ((edges & SnapEdges.Left) != 0) left += ddx;
+            else right += ddx;
+        }
+
+        if (dy is { } ddy)
+        {
+            if ((edges & SnapEdges.Top) != 0) top += ddy;
+            else bottom += ddy;
+        }
+
+        return new SnapResult(new PixelRect(left, top, right - left, bottom - top), guideX, guideY);
+    }
+
+    /// <summary>在兩組（邊, 目標）裡找最近的吸附點；回傳位移量與對齊線位置。</summary>
+    private static (int? Delta, int? Guide) Best((int Edge, List<int> Targets)? a, (int Edge, List<int> Targets)? b, int threshold)
+    {
+        int? bestDelta = null;
+        int? guide = null;
+        foreach (var (edge, targets) in new[] { a, b }.Where(x => x != null).Select(x => x!.Value))
+        {
+            foreach (int target in targets)
+            {
+                int delta = target - edge;
+                if (Math.Abs(delta) <= threshold && (bestDelta == null || Math.Abs(delta) < Math.Abs(bestDelta.Value)))
+                {
+                    bestDelta = delta;
+                    guide = target;
+                }
+            }
+        }
+
+        return (bestDelta, guide);
+    }
+
     private static long DistanceSquared(PixelRect r, int x, int y)
     {
         long dx = x < r.X ? r.X - x : x >= r.Right ? x - r.Right + 1 : 0;
@@ -85,3 +170,16 @@ public static class LayoutMath
         return dx * dx + dy * dy;
     }
 }
+
+[Flags]
+public enum SnapEdges
+{
+    None = 0,
+    Left = 1,
+    Top = 2,
+    Right = 4,
+    Bottom = 8,
+    All = Left | Top | Right | Bottom,
+}
+
+public readonly record struct SnapResult(PixelRect Rect, int? GuideX, int? GuideY);

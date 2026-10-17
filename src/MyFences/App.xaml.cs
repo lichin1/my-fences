@@ -25,7 +25,8 @@ public partial class App : Application
     private TrayIcon? _tray;
     private HotkeyManager? _hotkeys;
     private DesktopWatcher? _desktopWatcher;
-    private DesktopDoubleClickHook? _doubleClickHook;
+    private DesktopMouseHook? _mouseHook;
+    private DesktopSelectionOverlay? _drawOverlay;
     private IntPtr _progman;
     private bool _fencesHidden;
     private bool _sessionEnding;
@@ -102,7 +103,18 @@ public partial class App : Application
 
         SyncDesktopIcons();
 
-        _doubleClickHook = new DesktopDoubleClickHook(Dispatcher, OnDesktopDoubleClick) { Enabled = Config.QuickHideEnabled };
+        // Windows 切換淺色 / 深色或換強調色時，分區跟著變
+        ThemeHelper.StartListening();
+        ThemeHelper.Changed += () =>
+        {
+            foreach (FenceWindow window in _windows)
+                window.ApplyAppearance();
+        };
+
+        _mouseHook = new DesktopMouseHook(Dispatcher, OnDesktopDoubleClick, OnDesktopDrawing, OnDesktopDrawn)
+        {
+            QuickHideEnabled = Config.QuickHideEnabled,
+        };
 
         TryEnsureDailySnapshot();
         _dailySnapshotTimer.Tick += (_, _) => TryEnsureDailySnapshot();
@@ -111,7 +123,7 @@ public partial class App : Application
         if (!File.Exists(ConfigStore.ConfigPath))
         {
             ConfigStore.Save(Config);
-            _tray.ShowBalloon("已建立預設分區。把檔案拖進分區，或右鍵分區標題列調整設定。");
+            _tray.ShowBalloon("已建立預設分區。把桌面上的檔案拖進分區；在桌面按住 Ctrl 拖曳可以畫出新分區。");
         }
     }
 
@@ -120,7 +132,7 @@ public partial class App : Application
         IsExiting = true;
         _desktopCheckTimer.Stop();
         _dailySnapshotTimer.Stop();
-        _doubleClickHook?.Dispose();
+        _mouseHook?.Dispose();
         _displayChangeTimer.Stop();
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         if (_mutex != null)
@@ -154,7 +166,8 @@ public partial class App : Application
         _saveTimer.Start();
     }
 
-    public void CreateFence(FenceKind kind)
+    /// <summary>建立分區；at 有值時放在那個螢幕像素範圍（Ctrl+拖曳畫出來的）。建好後直接進入改名。</summary>
+    public FenceWindow? CreateFence(FenceKind kind, PixelRect? at = null)
     {
         string? folder = null;
         string name = "新分區";
@@ -162,7 +175,7 @@ public partial class App : Application
         {
             var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "選擇要顯示在分區裡的資料夾" };
             if (dialog.ShowDialog() != true)
-                return;
+                return null;
 
             folder = dialog.FolderName;
             string folderName = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar));
@@ -184,12 +197,19 @@ public partial class App : Application
         Config.Fences.Add(fence);
         if (_fencesHidden)
             ToggleFences();
-        OpenFence(fence);
+        FenceWindow window = OpenFence(fence);
+        if (at is { } rect)
+            window.PlaceAtPixels(rect);
+        if (kind == FenceKind.Standard)
+            window.BeginRename();
         RequestSave();
+        return window;
     }
 
     public void DeleteFence(FenceWindow window)
     {
+        // 分區裡的檔案會放回桌面（取消隱藏）
+        PushUndo($"已刪除分區「{window.Config.Name}」，裡面的檔案放回桌面");
         Config.Fences.Remove(window.Config);
         _windows.Remove(window);
         window.CloseIntentionally();
@@ -256,6 +276,13 @@ public partial class App : Application
         UpdateVisibility();
         RequestSave();
     }
+
+    /// <summary>目前畫面上其他分區的位置（吸附用）。</summary>
+    public List<PixelRect> GetVisibleFenceBounds(FenceWindow except) =>
+        _windows.Where(w => w != except && w.IsVisible)
+            .Select(w => w.GetPixelBounds())
+            .OfType<PixelRect>()
+            .ToList();
 
     private bool ShouldShow(FenceWindow window) => !_fencesHidden && window.Config.Page == Config.CurrentPage;
 
@@ -325,8 +352,8 @@ public partial class App : Application
     public void SetQuickHide(bool enabled)
     {
         Config.QuickHideEnabled = enabled;
-        if (_doubleClickHook != null)
-            _doubleClickHook.Enabled = enabled;
+        if (_mouseHook != null)
+            _mouseHook.QuickHideEnabled = enabled;
         RequestSave();
     }
 
@@ -334,7 +361,11 @@ public partial class App : Application
     public int SortDesktop()
     {
         CreateSnapshot("整理桌面前自動備份", SnapshotKind.Backup);
-        return ApplyRules(DesktopHelper.EnumerateDesktopItems());
+        string undoState = SerializeFences();
+        int count = ApplyRules(DesktopHelper.EnumerateDesktopItems());
+        if (count > 0)
+            PushUndo($"已把 {count} 個桌面項目整理進分區", undoState);
+        return count;
     }
 
     public Snapshot? CreateSnapshot(string name, SnapshotKind kind)
@@ -356,19 +387,63 @@ public partial class App : Application
         if (CreateSnapshot("還原快照前自動備份", SnapshotKind.Backup) == null)
             return;
 
+        PushUndo($"已還原快照「{snapshot.Name}」");
+        ReplaceFences(snapshot.Fences);
+    }
+
+    /// <summary>整組換掉分區（還原快照、復原用）：關掉所有分區視窗再依新設定開回來。</summary>
+    private void ReplaceFences(List<FenceConfig> fences)
+    {
         foreach (FenceWindow window in _windows.ToList())
         {
             _windows.Remove(window);
             window.CloseIntentionally();
         }
 
-        Config.Fences = snapshot.Fences;
+        Config.Fences = fences;
         Config.PageCount = Math.Max(Config.PageCount, Config.Fences.Select(f => f.Page + 1).DefaultIfEmpty(1).Max());
         if (_fencesHidden)
             ToggleFences();
         foreach (FenceConfig fence in Config.Fences)
             OpenFence(fence);
         RequestSave();
+    }
+
+    // ───────────── 復原 ─────────────
+
+    private const int MaxUndo = 30;
+    private readonly List<(string State, string Message)> _undoStack = new();
+
+    private string SerializeFences() => System.Text.Json.JsonSerializer.Serialize(Config.Fences, ConfigStore.JsonOptions);
+
+    /// <summary>
+    /// 在改動「之前」呼叫：記下目前所有分區的狀態，並在右下角顯示附「復原」按鈕的提示。
+    /// state 可以傳入事先記下的狀態（改動完才知道要不要提示時用）。
+    /// </summary>
+    public void PushUndo(string message, string? state = null)
+    {
+        _undoStack.Add((state ?? SerializeFences(), message));
+        if (_undoStack.Count > MaxUndo)
+            _undoStack.RemoveAt(0);
+        Toast.ShowMessage(message, "復原", Undo);
+    }
+
+    public void Undo()
+    {
+        if (_undoStack.Count == 0)
+        {
+            Toast.ShowMessage("沒有可以復原的動作。");
+            return;
+        }
+
+        (string state, string message) = _undoStack[^1];
+        _undoStack.RemoveAt(_undoStack.Count - 1);
+        var fences = System.Text.Json.JsonSerializer.Deserialize<List<FenceConfig>>(state, ConfigStore.JsonOptions);
+        if (fences == null)
+            return;
+
+        ReplaceFences(fences);
+        Toast.ShowMessage("已復原：" + message);
     }
 
     /// <summary>把還沒在任何分區裡的項目，依各分區的規則放進去。回傳放入的數量。</summary>
@@ -483,6 +558,31 @@ public partial class App : Application
             RequestSave();
             _tray?.ShowBalloon("你剛剛雙擊了桌面空白處，分區已隱藏。再雙擊一次就會出現。\n不想要這個功能，可以在系統匣選單關掉。");
         }
+    }
+
+    // ───────────── Ctrl+拖曳建立分區 ─────────────
+
+    private const int MinDrawWidth = 120;
+    private const int MinDrawHeight = 80;
+
+    private void OnDesktopDrawing(PixelRect? rect)
+    {
+        if (rect is not { } r)
+        {
+            _drawOverlay?.Hide();
+            return;
+        }
+
+        _drawOverlay ??= new DesktopSelectionOverlay();
+        _drawOverlay.Update(r, r.Width >= MinDrawWidth && r.Height >= MinDrawHeight);
+    }
+
+    private void OnDesktopDrawn(PixelRect rect)
+    {
+        if (rect.Width < MinDrawWidth || rect.Height < MinDrawHeight)
+            return;
+
+        CreateFence(FenceKind.Standard, rect);
     }
 
     private void TryEnsureDailySnapshot()

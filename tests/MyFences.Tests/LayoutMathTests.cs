@@ -84,3 +84,60 @@ public sealed class LayoutSerializationTests
         Assert.Equal(screens, back);
     }
 }
+
+public sealed class SnapTests
+{
+    private static readonly PixelRect Area = new(0, 0, 1920, 1040);
+
+    [Fact]
+    public void Moving_near_screen_edge_snaps_to_it()
+    {
+        var result = LayoutMath.Snap(new PixelRect(7, 300, 200, 100), Array.Empty<PixelRect>(), Area, SnapEdges.All);
+
+        Assert.Equal(new PixelRect(0, 300, 200, 100), result.Rect);
+        Assert.Equal(0, result.GuideX);
+        Assert.Null(result.GuideY);
+    }
+
+    [Fact]
+    public void Moving_next_to_another_fence_snaps_beside_it_with_a_gap()
+    {
+        var other = new PixelRect(100, 100, 300, 200); // 右邊在 400
+        var result = LayoutMath.Snap(new PixelRect(413, 105, 200, 100), new[] { other }, Area, SnapEdges.All);
+
+        Assert.Equal(408, result.Rect.X);  // 400 + 8 間距
+        Assert.Equal(100, result.Rect.Y);  // 頂端對齊
+        Assert.Equal(408, result.GuideX);
+        Assert.Equal(100, result.GuideY);
+    }
+
+    [Fact]
+    public void Far_away_fences_are_ignored()
+    {
+        var other = new PixelRect(100, 900, 300, 100);
+        var result = LayoutMath.Snap(new PixelRect(104, 100, 200, 100), new[] { other }, Area, SnapEdges.All);
+
+        Assert.Equal(104, result.Rect.X);
+    }
+
+    [Fact]
+    public void Nothing_close_means_no_change()
+    {
+        var rect = new PixelRect(500, 500, 200, 100);
+        var result = LayoutMath.Snap(rect, Array.Empty<PixelRect>(), Area, SnapEdges.All);
+
+        Assert.Equal(rect, result.Rect);
+        Assert.Null(result.GuideX);
+        Assert.Null(result.GuideY);
+    }
+
+    [Fact]
+    public void Resizing_only_moves_the_dragged_edge()
+    {
+        var other = new PixelRect(600, 100, 200, 200);
+        // 拖右邊，靠近另一個分區的左邊（600 - 8 = 592）
+        var result = LayoutMath.Snap(new PixelRect(100, 100, 488, 200), new[] { other }, Area, SnapEdges.Right);
+
+        Assert.Equal(new PixelRect(100, 100, 492, 200), result.Rect);
+    }
+}

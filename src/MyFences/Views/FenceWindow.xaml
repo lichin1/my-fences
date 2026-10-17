@@ -12,13 +12,31 @@
         MinWidth="140"
         MinHeight="30"
         AllowDrop="True"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
         DragEnter="OnDragEnter"
         DragOver="OnDragOver"
+        DragLeave="OnDragLeave"
         Drop="OnDrop"
         MouseEnter="OnMouseEnter"
-        MouseLeave="OnMouseLeave">
+        MouseLeave="OnMouseLeave"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
 
+    <!--
+        顏色都用 DynamicResource：ApplyAppearance() 會依分區背景的明暗與系統強調色，
+        換掉這些資源（淺色背景用深色字、深色背景用白字）。
+    -->
     <Window.Resources>
+        <SolidColorBrush x:Key="FenceText" Color="White" />
+        <SolidColorBrush x:Key="FenceSubtleText" Color="#B0FFFFFF" />
+        <SolidColorBrush x:Key="ItemHover" Color="#26FFFFFF" />
+        <SolidColorBrush x:Key="ItemSelected" Color="#550078D4" />
+        <SolidColorBrush x:Key="ItemSelectedBorder" Color="#AA0078D4" />
+        <SolidColorBrush x:Key="ButtonHover" Color="#40FFFFFF" />
+        <SolidColorBrush x:Key="ButtonPressed" Color="#60FFFFFF" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#0078D4" />
+        <SolidColorBrush x:Key="PanelBackground" Color="#F02B2B2B" />
+        <SolidColorBrush x:Key="PanelText" Color="White" />
+        <SolidColorBrush x:Key="PanelBorder" Color="#30FFFFFF" />
         <DropShadowEffect x:Key="TextShadow" ShadowDepth="1" BlurRadius="3" Opacity="0.9" Color="Black" />
 
         <Style x:Key="FenceItemStyle" TargetType="ListBoxItem">
@@ -29,15 +47,17 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
-                        <Border x:Name="Bd" Background="Transparent" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <Border x:Name="Bd" Background="Transparent" BorderBrush="Transparent" BorderThickness="1"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
                             <ContentPresenter />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#26FFFFFF" />
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ItemHover}" />
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#45FFFFFF" />
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ItemSelected}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ItemSelectedBorder}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -47,26 +67,26 @@
 
         <!-- 標題列上的小按鈕（滑鼠移到分區上才出現） -->
         <Style x:Key="TitleButton" TargetType="Button">
-            <Setter Property="Width" Value="24" />
-            <Setter Property="Height" Value="22" />
+            <Setter Property="Width" Value="26" />
+            <Setter Property="Height" Value="24" />
             <Setter Property="Margin" Value="1,0" />
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Foreground" Value="{DynamicResource FenceText}" />
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="Transparent" CornerRadius="4">
+                        <Border x:Name="Bd" Background="Transparent" CornerRadius="5">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#40FFFFFF" />
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ButtonHover}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#60FFFFFF" />
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ButtonPressed}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -74,50 +94,52 @@
             </Setter>
         </Style>
 
-        <Style x:Key="PanelText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#DDFFFFFF" />
+        <Style x:Key="PanelTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource PanelText}" />
+            <Setter Property="Opacity" Value="0.85" />
             <Setter Property="FontSize" Value="12" />
-            <Setter Property="Margin" Value="0,10,0,4" />
+            <Setter Property="Margin" Value="0,10,0,6" />
         </Style>
 
         <Style x:Key="PanelCheck" TargetType="CheckBox">
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Foreground" Value="{DynamicResource PanelText}" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Margin" Value="0,6,0,0" />
         </Style>
     </Window.Resources>
 
     <Border x:Name="RootBorder"
-            CornerRadius="6"
+            CornerRadius="8"
             BorderBrush="#40FFFFFF"
             BorderThickness="1"
             PreviewMouseRightButtonUp="OnRightButtonUp">
         <DockPanel>
             <Border x:Name="TitleBar"
                     DockPanel.Dock="Top"
-                    Height="28"
-                    CornerRadius="5,5,0,0"
+                    Height="30"
+                    CornerRadius="7,7,0,0"
                     MouseLeftButtonDown="OnTitleMouseLeftButtonDown">
                 <Grid>
                     <TextBlock x:Name="TitleText"
                                Margin="10,0"
                                VerticalAlignment="Center"
                                HorizontalAlignment="Center"
-                               Foreground="White"
+                               Foreground="{DynamicResource FenceText}"
                                FontSize="13"
                                FontWeight="SemiBold"
                                TextTrimming="CharacterEllipsis"
-                               ToolTip="雙擊：收合 / 展開"
-                               Effect="{StaticResource TextShadow}" />
+                               ToolTip="拖曳移動｜雙擊收合 / 展開"
+                               Effect="{DynamicResource TextShadow}" />
 
                     <!-- 直接在標題列改名 -->
                     <TextBox x:Name="TitleEditor"
                              Visibility="Collapsed"
-                             Margin="6,3,130,3"
+                             Margin="6,3,140,3"
                              Padding="4,0"
                              VerticalContentAlignment="Center"
                              FontSize="13"
-                             Background="#E0FFFFFF"
+                             Background="#F0FFFFFF"
+                             Foreground="Black"
                              BorderThickness="0"
                              KeyDown="OnTitleEditorKeyDown"
                              LostKeyboardFocus="OnTitleEditorLostFocus" />
@@ -126,7 +148,7 @@
                                 Orientation="Horizontal"
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Center"
-                                Margin="0,0,4,0"
+                                Margin="0,0,3,0"
                                 Opacity="0"
                                 IsHitTestVisible="False">
                         <Button x:Name="RenameButton" Style="{StaticResource TitleButton}" Content="&#xE70F;" ToolTip="改名" Click="OnRenameClick" />
@@ -141,21 +163,20 @@
             <!-- 分區內的分頁（有 2 個以上分頁才顯示） -->
             <WrapPanel x:Name="TabStrip" DockPanel.Dock="Top" Margin="6,4,6,0" Visibility="Collapsed" />
 
-
             <Grid>
                 <ListBox x:Name="ItemsList"
                          Background="Transparent"
                          BorderThickness="0"
                          Padding="4"
-                         SelectionMode="Single"
+                         SelectionMode="Extended"
                          ItemContainerStyle="{StaticResource FenceItemStyle}"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.VerticalScrollBarVisibility="Auto"
                          MouseDoubleClick="OnItemsDoubleClick"
                          PreviewMouseLeftButtonDown="OnItemsPreviewMouseLeftButtonDown"
+                         PreviewMouseLeftButtonUp="OnItemsPreviewMouseLeftButtonUp"
                          PreviewMouseRightButtonDown="OnItemsPreviewMouseRightButtonDown"
-                         PreviewMouseMove="OnItemsPreviewMouseMove"
-                         PreviewKeyDown="OnItemsPreviewKeyDown">
+                         PreviewMouseMove="OnItemsPreviewMouseMove">
                     <ListBox.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel Orientation="Horizontal" />
@@ -171,16 +192,24 @@
                                 <TextBlock Text="{Binding DisplayName}"
                                            Margin="0,4,0,0"
                                            MaxHeight="34"
-                                           Foreground="White"
+                                           Foreground="{DynamicResource FenceText}"
                                            FontSize="12"
                                            TextAlignment="Center"
                                            TextWrapping="Wrap"
                                            TextTrimming="CharacterEllipsis"
-                                           Effect="{StaticResource TextShadow}" />
+                                           Effect="{DynamicResource TextShadow}" />
                             </StackPanel>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
+
+                <!-- 框選範圍、拖曳時的插入線（只用來畫，不接收滑鼠） -->
+                <Canvas x:Name="Overlay" IsHitTestVisible="False" ClipToBounds="True">
+                    <Rectangle x:Name="SelectionBox" Visibility="Collapsed" RadiusX="3" RadiusY="3"
+                               Stroke="{DynamicResource AccentBrush}" StrokeThickness="1" Fill="{DynamicResource ItemSelected}" />
+                    <Rectangle x:Name="InsertionLine" Visibility="Collapsed" Width="3" RadiusX="1.5" RadiusY="1.5"
+                               Fill="{DynamicResource AccentBrush}" />
+                </Canvas>
 
                 <Popup x:Name="AppearancePopup"
                        PlacementTarget="{Binding ElementName=AppearanceButton}"
@@ -189,17 +218,17 @@
                        AllowsTransparency="True"
                        PopupAnimation="Fade"
                        Closed="OnAppearancePopupClosed">
-                    <Border Background="#F02B2B2B" CornerRadius="8" Padding="14,6,14,12" Width="240"
-                            BorderBrush="#30FFFFFF" BorderThickness="1">
+                    <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,4,14,12" Width="250"
+                            BorderBrush="{DynamicResource PanelBorder}" BorderThickness="1">
                         <StackPanel>
-                            <TextBlock Style="{StaticResource PanelText}" Text="顏色" />
+                            <TextBlock Style="{StaticResource PanelTextStyle}" Text="顏色" />
                             <WrapPanel x:Name="ColorSwatches" />
 
-                            <TextBlock x:Name="OpacityLabel" Style="{StaticResource PanelText}" Text="背景不透明度" />
+                            <TextBlock x:Name="OpacityLabel" Style="{StaticResource PanelTextStyle}" Text="背景不透明度" />
                             <Slider x:Name="OpacitySlider" Minimum="0" Maximum="100" SmallChange="5" LargeChange="10"
                                     IsMoveToPointEnabled="True" ValueChanged="OnOpacitySliderChanged" />
 
-                            <TextBlock Style="{StaticResource PanelText}" Text="圖示大小" />
+                            <TextBlock Style="{StaticResource PanelTextStyle}" Text="圖示大小" />
                             <StackPanel x:Name="IconSizeButtons" Orientation="Horizontal" />
 
                             <CheckBox x:Name="BlurCheck" Style="{StaticResource PanelCheck}" Margin="0,12,0,0"
@@ -214,10 +243,11 @@
                            IsHitTestVisible="False"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
-                           Foreground="#B0FFFFFF"
+                           Foreground="{DynamicResource FenceSubtleText}"
                            FontSize="12"
                            TextAlignment="Center"
-                           Effect="{StaticResource TextShadow}" />
+                           LineHeight="20"
+                           Effect="{DynamicResource TextShadow}" />
             </Grid>
         </DockPanel>
     </Border>

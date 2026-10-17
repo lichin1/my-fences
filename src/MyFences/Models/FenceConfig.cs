@@ -25,7 +25,8 @@ public sealed class FenceConfig
     public double Height { get; set; } = 240;
     public bool RolledUp { get; set; }
 
-    public string Color { get; set; } = "#1E1E1E";
+    /// <summary>"system" = 跟隨 Windows 淺色 / 深色，"accent" = 系統強調色，或 #RRGGBB。</summary>
+    public string Color { get; set; } = "system";
     public double Opacity { get; set; } = 0.55;
     public double IconSize { get; set; } = 48;
 

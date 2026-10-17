@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace MyFences.Models;
@@ -52,6 +53,146 @@ public static class FenceRules
 
         return invalid;
     }
+
+    // ───────────── 給圖像化編輯器用：規則字串 ⇄ 條件清單 ─────────────
+
+    /// <summary>把一條規則（例如 "pdf+name:發票"）拆成條件；看不懂的條件會略過。</summary>
+    public static List<RuleCondition> ParseRule(string rule)
+    {
+        var result = new List<RuleCondition>();
+        foreach (string condition in SplitConditions(rule))
+        {
+            if (!IsValidCondition(condition))
+                continue;
+
+            (string key, string value) = SplitKey(condition);
+            result.Add(key switch
+            {
+                "" when value == "folder" => new RuleCondition(RuleConditionKind.Folder),
+                "" when value == "*" => new RuleCondition(RuleConditionKind.AnyFile),
+                "" => new RuleCondition(RuleConditionKind.Extension, value.TrimStart('.')),
+                "name" => new RuleCondition(RuleConditionKind.NameContains, value),
+                "newer" => new RuleCondition(RuleConditionKind.NewerThanDays, value),
+                "older" => new RuleCondition(RuleConditionKind.OlderThanDays, value),
+                "larger" => new RuleCondition(RuleConditionKind.LargerThanMb, value),
+                _ => new RuleCondition(RuleConditionKind.SmallerThanMb, value),
+            });
+        }
+
+        return result;
+    }
+
+    /// <summary>把條件組回規則字串；值不合法的條件回傳 null（給編輯器顯示錯誤）。</summary>
+    public static string? FormatRule(IEnumerable<RuleCondition> conditions)
+    {
+        var parts = new List<string>();
+        foreach (RuleCondition c in conditions)
+        {
+            string value = c.Value.Trim();
+            string part = c.Kind switch
+            {
+                RuleConditionKind.Folder => "folder",
+                RuleConditionKind.AnyFile => "*",
+                RuleConditionKind.Extension => value.TrimStart('.').ToLowerInvariant(),
+                RuleConditionKind.NameContains => "name:" + value,
+                RuleConditionKind.NewerThanDays => "newer:" + value,
+                RuleConditionKind.OlderThanDays => "older:" + value,
+                RuleConditionKind.LargerThanMb => "larger:" + value,
+                _ => "smaller:" + value,
+            };
+
+            // + 是「而且」的分隔符號，值裡面不能有
+            if (value.Contains('+') || !IsValidCondition(part) || (c.Kind == RuleConditionKind.Extension && value.TrimStart('.').Length == 0))
+                return null;
+            parts.Add(part);
+        }
+
+        return parts.Count == 0 ? null : string.Join("+", parts);
+    }
+
+    /// <summary>
+    /// 編輯器的一組條件 → 規則字串。副檔名可以一次填好幾個（用空白或逗號分隔，例如 "jpg png"），
+    /// 會展開成多條規則（jpg、png 各一條，其他條件照樣「而且」）。有不合法的值時回傳 null。
+    /// </summary>
+    public static List<string>? ExpandGroup(IReadOnlyList<RuleCondition> group)
+    {
+        var variants = new List<List<RuleCondition>> { new() };
+        foreach (RuleCondition c in group)
+        {
+            string[] values = c.Kind == RuleConditionKind.Extension
+                ? c.Value.Split(new[] { ' ', ',', '，', '、', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                : new[] { c.Value };
+            if (values.Length == 0)
+                return null;
+
+            variants = variants
+                .SelectMany(v => values.Select(value => new List<RuleCondition>(v) { c with { Value = value } }))
+                .ToList();
+        }
+
+        var rules = new List<string>();
+        foreach (List<RuleCondition> variant in variants)
+        {
+            if (FormatRule(variant) is not { } rule)
+                return null;
+            if (!rules.Contains(rule))
+                rules.Add(rule);
+        }
+
+        return rules;
+    }
+
+    /// <summary>
+    /// 規則字串 → 編輯器用的條件組。只有一個副檔名的規則會合併成一組（例如 lnk、url → 「副檔名是 lnk url」），
+    /// 其他規則各自一組。
+    /// </summary>
+    public static List<List<RuleCondition>> GroupForEditing(IEnumerable<string> rules)
+    {
+        var groups = new List<List<RuleCondition>>();
+        var extensions = new List<string>();
+        int extensionGroupIndex = -1;
+        foreach (string rule in rules)
+        {
+            List<RuleCondition> conditions = ParseRule(rule);
+            if (conditions.Count == 0)
+                continue;
+
+            if (conditions is [{ Kind: RuleConditionKind.Extension } only])
+            {
+                if (extensionGroupIndex < 0)
+                {
+                    extensionGroupIndex = groups.Count;
+                    groups.Add(new List<RuleCondition>());
+                }
+
+                if (!extensions.Contains(only.Value))
+                    extensions.Add(only.Value);
+                continue;
+            }
+
+            groups.Add(conditions);
+        }
+
+        if (extensionGroupIndex >= 0)
+            groups[extensionGroupIndex] = new List<RuleCondition> { new(RuleConditionKind.Extension, string.Join(" ", extensions)) };
+        return groups;
+    }
+
+    public static bool NeedsValue(RuleConditionKind kind) =>
+        kind is not (RuleConditionKind.Folder or RuleConditionKind.AnyFile);
+
+    /// <summary>條件的中文說明，例如「副檔名是 pdf」。</summary>
+    public static string Describe(RuleCondition c) => c.Kind switch
+    {
+        RuleConditionKind.Folder => "是資料夾",
+        RuleConditionKind.AnyFile => "任何檔案",
+        RuleConditionKind.Extension => $"副檔名是 {c.Value}",
+        RuleConditionKind.NameContains => $"檔名包含「{c.Value}」",
+        RuleConditionKind.NewerThanDays => $"{c.Value} 天內修改過",
+        RuleConditionKind.OlderThanDays => $"超過 {c.Value} 天沒修改",
+        RuleConditionKind.LargerThanMb => $"大於 {c.Value} MB",
+        _ => $"小於 {c.Value} MB",
+    };
 
     private static bool MatchesRule(string rule, ItemInfo item)
     {
@@ -206,3 +347,18 @@ public static class FenceRules
         }
     }
 }
+
+public enum RuleConditionKind
+{
+    Extension,
+    Folder,
+    AnyFile,
+    NameContains,
+    NewerThanDays,
+    OlderThanDays,
+    LargerThanMb,
+    SmallerThanMb,
+}
+
+/// <summary>規則裡的一個條件（圖像化編輯器的一列）。</summary>
+public sealed record RuleCondition(RuleConditionKind Kind, string Value = "");

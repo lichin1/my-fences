@@ -28,18 +28,17 @@ public partial class FenceWindow : Window
     public static readonly DependencyProperty CellWidthProperty =
         DependencyProperty.Register(nameof(CellWidth), typeof(double), typeof(FenceWindow), new PropertyMetadata(80.0));
 
-    private const double RolledUpHeight = 30; // 標題列 28 + 上下框線
-    private const double GridSize = 10;
+    private const double RolledUpHeight = 32; // 標題列 30 + 上下框線
     private const string InternalDragFormat = "MyFences.Item";
 
     private static readonly (string Name, string Color)[] ColorPresets =
     {
+        ("跟隨系統（淺色 / 深色）", ThemeHelper.SystemColor), ("系統強調色", ThemeHelper.AccentColorKey),
         ("黑", "#1E1E1E"), ("深灰", "#3A3A3A"), ("藍", "#1F4E79"), ("綠", "#2E5E3A"),
         ("紫", "#4B2E6B"), ("紅", "#6B2E2E"), ("棕", "#5C4326"),
     };
 
     private static readonly double[] OpacityPresets = { 0.0, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0 };
-    private static readonly (string Name, int Value)[] RulePriorityPresets = { ("高（先比對）", 1), ("一般", 0), ("低（最後比對）", -1) };
     private static readonly (string Name, double Size)[] IconSizePresets = { ("小", 32), ("中", 48), ("大", 64) };
 
     private readonly ObservableCollection<FenceItem> _items = new();
@@ -73,6 +72,12 @@ public partial class FenceWindow : Window
         SetupPortalWatcher();
 
         SourceInitialized += (_, _) => AttachToDesktop();
+        _hoverExpandTimer.Tick += (_, _) =>
+        {
+            _hoverExpandTimer.Stop();
+            if (IsMouseOver)
+                ExpandTemporarily();
+        };
         LocationChanged += (_, _) => SaveBounds();
         SizeChanged += (_, _) => SaveBounds();
     }
@@ -126,6 +131,13 @@ public partial class FenceWindow : Window
         return new PixelRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
     }
 
+    /// <summary>新分區放到螢幕像素範圍（高度依這台螢幕的 DPI 換成 WPF 單位）。</summary>
+    public void PlaceAtPixels(PixelRect rect)
+    {
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleY;
+        ApplyPixelBounds(rect, rect.Height / (scale > 0 ? scale : 1));
+    }
+
     /// <summary>依像素位置擺放分區；收合中的分區只改位置和寬度，展開高度另外給。</summary>
     public void ApplyPixelBounds(PixelRect rect, double expandedHeight)
     {
@@ -141,25 +153,39 @@ public partial class FenceWindow : Window
 
     public void ApplyAppearance()
     {
-        Color baseColor;
-        try
-        {
-            baseColor = (Color)ColorConverter.ConvertFromString(Config.Color);
-        }
-        catch (FormatException)
-        {
-            baseColor = Colors.Black;
-        }
+        Color baseColor = ThemeHelper.Resolve(Config.Color);
+        bool lightBackground = ThemeHelper.IsLight(baseColor);
+        Color accent = ThemeHelper.AccentColor;
 
         // alpha 至少 1：完全透明的像素會讓滑鼠點擊穿透到桌面
         byte bodyAlpha = (byte)Math.Clamp(Config.Opacity * 255, 1, 255);
         byte titleAlpha = (byte)Math.Clamp(Config.Opacity * 255 + 50, 70, 255);
         RootBorder.Background = new SolidColorBrush(Color.FromArgb(bodyAlpha, baseColor.R, baseColor.G, baseColor.B));
         TitleBar.Background = new SolidColorBrush(Color.FromArgb(titleAlpha, baseColor.R, baseColor.G, baseColor.B));
+        RootBorder.BorderBrush = Brush(lightBackground ? 0x30000000u : 0x40FFFFFFu);
+
+        // 淺色背景用深色字（白色光暈），深色背景用白字（黑色陰影）
+        Resources["FenceText"] = lightBackground ? Brush(0xFF1B1B1Bu) : Brushes.White;
+        Resources["FenceSubtleText"] = Brush(lightBackground ? 0x99000000u : 0xB0FFFFFFu);
+        Resources["ItemHover"] = Brush(lightBackground ? 0x14000000u : 0x22FFFFFFu);
+        Resources["ButtonHover"] = Brush(lightBackground ? 0x18000000u : 0x33FFFFFFu);
+        Resources["ButtonPressed"] = Brush(lightBackground ? 0x30000000u : 0x55FFFFFFu);
+        Resources["ItemSelected"] = new SolidColorBrush(Color.FromArgb(0x45, accent.R, accent.G, accent.B));
+        Resources["ItemSelectedBorder"] = new SolidColorBrush(Color.FromArgb(0xAA, accent.R, accent.G, accent.B));
+        Resources["AccentBrush"] = new SolidColorBrush(accent);
+        Resources["TextShadow"] = lightBackground
+            ? new System.Windows.Media.Effects.DropShadowEffect { ShadowDepth = 0, BlurRadius = 4, Opacity = 0.7, Color = Colors.White }
+            : new System.Windows.Media.Effects.DropShadowEffect { ShadowDepth = 1, BlurRadius = 3, Opacity = 0.9, Color = Colors.Black };
+
+        // 彈出面板跟著 Windows 的淺色 / 深色模式
+        bool lightSystem = ThemeHelper.IsLightTheme;
+        Resources["PanelBackground"] = Brush(lightSystem ? 0xF5F9F9F9u : 0xF02B2B2Bu);
+        Resources["PanelText"] = lightSystem ? Brush(0xFF1B1B1Bu) : Brushes.White;
+        Resources["PanelBorder"] = Brush(lightSystem ? 0x22000000u : 0x30FFFFFFu);
 
         // 毛玻璃是整個矩形視窗，圓角會露出模糊的直角，所以開毛玻璃時改成直角
-        RootBorder.CornerRadius = new CornerRadius(Config.Blur ? 0 : 6);
-        TitleBar.CornerRadius = Config.Blur ? new CornerRadius(0) : new CornerRadius(5, 5, 0, 0);
+        RootBorder.CornerRadius = new CornerRadius(Config.Blur ? 0 : 8);
+        TitleBar.CornerRadius = Config.Blur ? new CornerRadius(0) : new CornerRadius(7, 7, 0, 0);
         BlurHelper.SetBlur(_hwnd, Config.Blur);
         UpdateFade(animate: false);
 
@@ -171,6 +197,9 @@ public partial class FenceWindow : Window
         RollUpButton.Content = Config.RolledUp ? "\uE70D" : "\uE70E";
         RollUpButton.ToolTip = Config.RolledUp ? "展開" : "收合";
     }
+
+    private static SolidColorBrush Brush(uint argb) =>
+        new(Color.FromArgb((byte)(argb >> 24), (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb));
 
     /// <summary>依鎖定 / 收合狀態設定可否縮放。</summary>
     public void ApplyChrome()
@@ -232,6 +261,16 @@ public partial class FenceWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg is WM_MOVING or WM_SIZING)
+        {
+            SnapWhileDragging(msg == WM_MOVING ? SnapEdges.All : EdgesForSizing(wParam.ToInt32()), lParam);
+            handled = true;
+            return new IntPtr(1);
+        }
+
+        if (msg == WM_EXITSIZEMOVE)
+            SnapGuides.Hide();
+
         if (msg == WM_WINDOWPOSCHANGING)
         {
             // 不管被誰啟動，都維持在最下層（桌面圖示之上、一般視窗之下）
@@ -245,6 +284,43 @@ public partial class FenceWindow : Window
 
         return IntPtr.Zero;
     }
+
+    /// <summary>拖曳 / 縮放中：吸附到螢幕邊緣與其他分區，並顯示對齊線（按住 Alt 可暫時關閉吸附）。</summary>
+    private void SnapWhileDragging(SnapEdges edges, IntPtr lParam)
+    {
+        var r = Marshal.PtrToStructure<RECT>(lParam);
+        var rect = new PixelRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+        System.Drawing.Rectangle wa = System.Windows.Forms.Screen.FromRectangle(
+            new System.Drawing.Rectangle(rect.X, rect.Y, rect.Width, rect.Height)).WorkingArea;
+        var area = new PixelRect(wa.X, wa.Y, wa.Width, wa.Height);
+
+        if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0 || edges == SnapEdges.None)
+        {
+            SnapGuides.Hide();
+            return;
+        }
+
+        SnapResult snapped = LayoutMath.Snap(rect, App.Current.GetVisibleFenceBounds(this), area, edges);
+        r.Left = snapped.Rect.X;
+        r.Top = snapped.Rect.Y;
+        r.Right = snapped.Rect.Right;
+        r.Bottom = snapped.Rect.Bottom;
+        Marshal.StructureToPtr(r, lParam, false);
+        SnapGuides.Show(snapped.GuideX, snapped.GuideY, area);
+    }
+
+    private static SnapEdges EdgesForSizing(int wmsz) => wmsz switch
+    {
+        1 => SnapEdges.Left,
+        2 => SnapEdges.Right,
+        3 => SnapEdges.Top,
+        4 => SnapEdges.Top | SnapEdges.Left,
+        5 => SnapEdges.Top | SnapEdges.Right,
+        6 => SnapEdges.Bottom,
+        7 => SnapEdges.Bottom | SnapEdges.Left,
+        8 => SnapEdges.Bottom | SnapEdges.Right,
+        _ => SnapEdges.None,
+    };
 
     private void SaveBounds()
     {
@@ -286,8 +362,21 @@ public partial class FenceWindow : Window
 
     private void OnRenameClick(object sender, RoutedEventArgs e) => BeginRename();
 
-    private void BeginRename()
+    public void BeginRename()
     {
+        // 剛建立的分區還沒載入完成時，等載入後再進入改名
+        if (!IsLoaded)
+        {
+            RoutedEventHandler? onLoaded = null;
+            onLoaded = (_, _) =>
+            {
+                Loaded -= onLoaded;
+                BeginRename();
+            };
+            Loaded += onLoaded;
+            return;
+        }
+
         TitleEditor.Text = Config.Name;
         TitleEditor.Visibility = Visibility.Visible;
         TitleText.Visibility = Visibility.Hidden;
@@ -364,7 +453,7 @@ public partial class FenceWindow : Window
                 Height = 24,
                 Margin = new Thickness(0, 0, 6, 6),
                 CornerRadius = new CornerRadius(12),
-                Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)),
+                Background = new SolidColorBrush(ThemeHelper.Resolve(color)),
                 BorderBrush = selected ? Brushes.White : new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0xFF, 0xFF)),
                 BorderThickness = new Thickness(selected ? 2.5 : 1),
                 Cursor = Cursors.Hand,
@@ -563,15 +652,9 @@ public partial class FenceWindow : Window
     private void DeleteTab(int index)
     {
         FenceTab tab = Config.Tabs[index];
-        if (tab.Items.Count > 0)
-        {
-            var answer = MessageBox.Show(
-                $"刪除分頁「{tab.Name}」？裡面的 {tab.Items.Count} 個項目會移到旁邊的分頁。",
-                "MyFences", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (answer != MessageBoxResult.Yes)
-                return;
-        }
-
+        App.Current.PushUndo(tab.Items.Count > 0
+            ? $"已刪除分頁「{tab.Name}」，裡面的 {tab.Items.Count} 個項目移到旁邊的分頁"
+            : $"已刪除分頁「{tab.Name}」");
         Config.RemoveTab(index);
         ReloadItems();
         App.Current.RequestSave();
@@ -642,17 +725,18 @@ public partial class FenceWindow : Window
         if (App.Current.Config.Locked)
             return;
 
+        // 拖曳中的吸附與對齊線在 WndProc 的 WM_MOVING 處理
         try
         {
             DragMove();
         }
         catch (InvalidOperationException)
         {
-            return;
         }
-
-        Left = Math.Round(Left / GridSize) * GridSize;
-        Top = Math.Round(Top / GridSize) * GridSize;
+        finally
+        {
+            SnapGuides.Hide();
+        }
     }
 
     private void ToggleRollUp()
@@ -665,15 +749,23 @@ public partial class FenceWindow : Window
         App.Current.RequestSave();
     }
 
+    // 收合的分區要滑鼠停一下才展開，滑過去不會一直彈開
+    private readonly DispatcherTimer _hoverExpandTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
+
     private void OnMouseEnter(object sender, MouseEventArgs e)
     {
         UpdateTitleButtons();
         UpdateFade();
-        ExpandTemporarily();
+        if (Config.RolledUp && !_hoverExpanded)
+        {
+            _hoverExpandTimer.Stop();
+            _hoverExpandTimer.Start();
+        }
     }
 
     private void OnMouseLeave(object sender, MouseEventArgs e)
     {
+        _hoverExpandTimer.Stop();
         UpdateTitleButtons();
         UpdateFade();
         if (!_hoverExpanded || ItemsList.ContextMenu?.IsOpen == true || RootBorder.ContextMenu?.IsOpen == true)
@@ -729,68 +821,196 @@ public partial class FenceWindow : Window
             OpenItem(item);
     }
 
-    private void OnItemsPreviewKeyDown(object sender, KeyEventArgs e)
+    private List<FenceItem> SelectedItems() => _items.Where(i => ItemsList.SelectedItems.Contains(i)).ToList();
+
+    /// <summary>鍵盤：Ctrl+Z 復原、Ctrl+A 全選、Delete 移出、Enter 開啟。</summary>
+    private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (ItemsList.SelectedItem is not FenceItem item)
+        if (TitleEditor.IsKeyboardFocusWithin)
             return;
 
-        if (e.Key == Key.Enter)
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        if (ctrl && e.Key == Key.Z)
         {
-            OpenItem(item);
+            App.Current.Undo();
             e.Handled = true;
         }
-        else if (e.Key == Key.Delete && IsStandard)
+        else if (ctrl && e.Key == Key.A)
         {
-            RemoveItem(item);
+            ItemsList.SelectAll();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Delete && IsStandard && SelectedItems() is { Count: > 0 } selected)
+        {
+            RemoveItems(selected.Select(i => i.FullPath).ToList());
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && SelectedItems() is { Count: > 0 } toOpen)
+        {
+            foreach (FenceItem item in toOpen.Take(10))
+                OpenItem(item);
             e.Handled = true;
         }
     }
+
+    // ───────────── 選取：點選、Ctrl / Shift 多選、框選 ─────────────
+
+    private bool _boxSelecting;
+    private Point _boxStart;
+    private HashSet<FenceItem> _selectionBeforeBox = new();
+    private FenceItem? _selectOnMouseUp;
 
     private void OnItemsPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         _dragStart = e.GetPosition(ItemsList);
         _pressedItem = ItemFromSource(e.OriginalSource);
+        _selectOnMouseUp = null;
+
+        if (_pressedItem == null)
+        {
+            if (IsInScrollBar(e.OriginalSource))
+                return;
+
+            // 在空白處按下 = 開始框選
+            _boxSelecting = true;
+            _boxStart = _dragStart;
+            bool additive = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            if (!additive)
+                ItemsList.UnselectAll();
+            _selectionBeforeBox = SelectedItems().ToHashSet();
+            ItemsList.Focus();
+            ItemsList.CaptureMouse();
+            e.Handled = true;
+            return;
+        }
+
+        // 點在已選取的項目上：先不要改選取，才能把整組拖走；沒拖的話放開時再只選這一個
+        if (e.ClickCount == 1 && Keyboard.Modifiers == ModifierKeys.None && ItemsList.SelectedItems.Contains(_pressedItem))
+        {
+            _selectOnMouseUp = _pressedItem;
+            ItemsList.Focus();
+            e.Handled = true;
+        }
+    }
+
+    private void OnItemsPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_boxSelecting)
+        {
+            _boxSelecting = false;
+            ItemsList.ReleaseMouseCapture();
+            SelectionBox.Visibility = Visibility.Collapsed;
+            e.Handled = true;
+        }
+
+        if (_selectOnMouseUp is { } item)
+        {
+            ItemsList.SelectedItems.Clear();
+            ItemsList.SelectedItem = item;
+            _selectOnMouseUp = null;
+        }
+
+        _pressedItem = null;
     }
 
     private void OnItemsPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (ItemFromSource(e.OriginalSource) is { } item)
+        // 右鍵點在已選取的項目上就保留多選，否則只選這一個
+        if (ItemFromSource(e.OriginalSource) is { } item && !ItemsList.SelectedItems.Contains(item))
+        {
+            ItemsList.SelectedItems.Clear();
             ItemsList.SelectedItem = item;
+        }
     }
+
+    private void UpdateBoxSelection(Point current)
+    {
+        var box = new Rect(_boxStart, current);
+        Canvas.SetLeft(SelectionBox, box.X);
+        Canvas.SetTop(SelectionBox, box.Y);
+        SelectionBox.Width = box.Width;
+        SelectionBox.Height = box.Height;
+        SelectionBox.Visibility = Visibility.Visible;
+
+        foreach (FenceItem item in _items)
+        {
+            if (ItemsList.ItemContainerGenerator.ContainerFromItem(item) is not ListBoxItem container || !container.IsVisible)
+                continue;
+
+            Rect bounds = container.TransformToAncestor(ItemsList).TransformBounds(new Rect(container.RenderSize));
+            bool select = bounds.IntersectsWith(box) || _selectionBeforeBox.Contains(item);
+            if (select != container.IsSelected)
+                container.IsSelected = select;
+        }
+    }
+
+    private static bool IsInScrollBar(object source)
+    {
+        var element = source as DependencyObject;
+        while (element != null)
+        {
+            if (element is System.Windows.Controls.Primitives.ScrollBar)
+                return true;
+            element = element is Visual ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element);
+        }
+
+        return false;
+    }
+
+    // ───────────── 拖出項目 ─────────────
 
     private void OnItemsPreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (_pressedItem == null || e.LeftButton != MouseButtonState.Pressed)
+        if (e.LeftButton != MouseButtonState.Pressed)
             return;
 
-        Vector delta = e.GetPosition(ItemsList) - _dragStart;
+        Point position = e.GetPosition(ItemsList);
+        if (_boxSelecting)
+        {
+            UpdateBoxSelection(position);
+            return;
+        }
+
+        if (_pressedItem == null)
+            return;
+
+        Vector delta = position - _dragStart;
         if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance &&
             Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance)
         {
             return;
         }
 
-        FenceItem item = _pressedItem;
+        // 按著的項目在選取範圍內就拖整組，否則只拖它
+        List<FenceItem> dragged = ItemsList.SelectedItems.Contains(_pressedItem) ? SelectedItems() : new List<FenceItem> { _pressedItem };
         _pressedItem = null;
+        _selectOnMouseUp = null;
+        List<string> paths = dragged.Select(i => i.FullPath).ToList();
 
         if (!IsStandard)
         {
             // 資料夾分區裡是真的檔案：可以拖到檔案總管複製 / 建立捷徑（不允許 Move，避免誤搬）
-            DragDrop.DoDragDrop(ItemsList, new DataObject(DataFormats.FileDrop, new[] { item.FullPath }),
+            DragDrop.DoDragDrop(ItemsList, new DataObject(DataFormats.FileDrop, paths.ToArray()),
                 DragDropEffects.Copy | DragDropEffects.Link);
             return;
         }
 
         // 一般分區只放自己的格式（不放 FileDrop）：拖到桌面或檔案總管時，Explorer 不會複製出一份檔案
-        var data = new DataObject(InternalDragFormat, Config.Id + "\n" + item.FullPath);
+        var data = new DataObject(InternalDragFormat, Config.Id + "\n" + string.Join("\n", paths));
+        string hint = paths.Count == 1 ? "放開就移出分區" : $"放開就把 {paths.Count} 個項目移出分區";
         GiveFeedbackEventHandler feedback = (_, fe) =>
         {
-            // 拖到桌面上會「拿出分區」，不要顯示禁止符號
+            // 拖到桌面上會「拿出分區」：不要顯示禁止符號，改顯示提示
             if (fe.Effects == DragDropEffects.None && DesktopHelper.IsCursorOverDesktop())
             {
                 fe.UseDefaultCursors = false;
                 Mouse.SetCursor(Cursors.Arrow);
+                CursorHint.ShowNearCursor(hint);
                 fe.Handled = true;
+            }
+            else
+            {
+                CursorHint.HideHint();
             }
         };
         ItemsList.GiveFeedback += feedback;
@@ -802,11 +1022,12 @@ public partial class FenceWindow : Window
         finally
         {
             ItemsList.GiveFeedback -= feedback;
+            CursorHint.HideHint();
         }
 
         // 沒有被任何分區接住、而且放在桌面上 = 拿出分區（桌面圖示會重新出現）
         if (result == DragDropEffects.None && DesktopHelper.IsCursorOverDesktop())
-            RemoveItem(item);
+            RemoveItems(paths);
     }
 
     /// <summary>拖進來的路徑：從其他分區拖來的（自己的格式）或從桌面 / 檔案總管拖來的（FileDrop）。</summary>
@@ -814,10 +1035,10 @@ public partial class FenceWindow : Window
     {
         sourceFenceId = null;
         if (data.GetDataPresent(InternalDragFormat) && data.GetData(InternalDragFormat) is string text &&
-            text.Split('\n', 2) is [var id, var path])
+            text.Split('\n') is [var id, .. var paths] && paths.Length > 0)
         {
             sourceFenceId = id;
-            return new[] { path };
+            return paths;
         }
 
         return data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] files
@@ -833,6 +1054,32 @@ public partial class FenceWindow : Window
 
     // ───────────── 拖放進分區 ─────────────
 
+    private Brush? _normalBorderBrush;
+    private bool _dropHighlighted;
+
+    private void SetDropHighlight(bool on)
+    {
+        if (on == _dropHighlighted)
+            return;
+
+        _dropHighlighted = on;
+        if (on)
+        {
+            _normalBorderBrush ??= RootBorder.BorderBrush;
+            RootBorder.BorderBrush = (Brush)Resources["AccentBrush"];
+            Color accent = ThemeHelper.AccentColor;
+            RootBorder.Effect = new System.Windows.Media.Effects.DropShadowEffect { ShadowDepth = 0, BlurRadius = 14, Opacity = 0.9, Color = accent };
+        }
+        else
+        {
+            if (_normalBorderBrush != null)
+                RootBorder.BorderBrush = _normalBorderBrush;
+            _normalBorderBrush = null;
+            RootBorder.Effect = null;
+            InsertionLine.Visibility = Visibility.Collapsed;
+        }
+    }
+
     private void OnDragEnter(object sender, DragEventArgs e)
     {
         ExpandTemporarily();
@@ -843,22 +1090,59 @@ public partial class FenceWindow : Window
     {
         e.Effects = IsStandard ? DropEffectFor(e.Data) : DragDropEffects.None;
         e.Handled = true;
+        bool accept = e.Effects != DragDropEffects.None;
+        SetDropHighlight(accept);
+        if (accept)
+            ShowInsertionLine(GetDropIndex(e));
+    }
+
+    private void OnDragLeave(object sender, DragEventArgs e)
+    {
+        // DragLeave 在子元素之間移動時也會觸發，真的離開視窗才取消提示
+        Point p = e.GetPosition(this);
+        if (p.X < 0 || p.Y < 0 || p.X >= ActualWidth || p.Y >= ActualHeight)
+            SetDropHighlight(false);
+    }
+
+    /// <summary>在插入位置畫一條直線（放在第 index 個項目前面）。</summary>
+    private void ShowInsertionLine(int index)
+    {
+        if (_items.Count == 0)
+        {
+            InsertionLine.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        bool after = index >= _items.Count;
+        FenceItem anchor = _items[Math.Min(index, _items.Count - 1)];
+        if (ItemsList.ItemContainerGenerator.ContainerFromItem(anchor) is not ListBoxItem container || !container.IsVisible)
+        {
+            InsertionLine.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        Rect bounds = container.TransformToAncestor(ItemsList).TransformBounds(new Rect(container.RenderSize));
+        Canvas.SetLeft(InsertionLine, (after ? bounds.Right + 1 : bounds.Left - 3));
+        Canvas.SetTop(InsertionLine, bounds.Top + 4);
+        InsertionLine.Height = Math.Max(0, bounds.Height - 8);
+        InsertionLine.Visibility = Visibility.Visible;
     }
 
     private void OnDrop(object sender, DragEventArgs e)
     {
         e.Handled = true;
+        int index = GetDropIndex(e);
+        SetDropHighlight(false);
         string[] files = GetDroppedPaths(e.Data, out string? sourceFenceId);
         if (!IsStandard || files.Length == 0)
             return;
 
         e.Effects = DropEffectFor(e.Data);
-        int index = GetDropIndex(e);
         bool fromThisFence = sourceFenceId == Config.Id;
+        List<string> items = Config.CurrentItems;
 
         foreach (string file in files)
         {
-            List<string> items = Config.CurrentItems;
             int existing = items.FindIndex(p => App.PathEquals(p, file));
             if (existing >= 0)
             {
@@ -884,15 +1168,25 @@ public partial class FenceWindow : Window
         }
 
         ReloadItems();
+        // 剛放進來的項目保持選取，方便接著再拖去別的地方
+        foreach (FenceItem item in _items.Where(i => files.Any(f => App.PathEquals(f, i.FullPath))))
+            ItemsList.SelectedItems.Add(item);
         App.Current.RequestSave();
     }
 
+    /// <summary>放下的位置：滑鼠在項目左半邊 = 插在它前面，右半邊 = 插在它後面。</summary>
     private int GetDropIndex(DragEventArgs e)
     {
-        if (ItemsList.InputHitTest(e.GetPosition(ItemsList)) is DependencyObject hit &&
-            ItemFromSource(hit) is { } target)
+        Point position = e.GetPosition(ItemsList);
+        if (ItemsList.InputHitTest(position) is DependencyObject hit && ItemFromSource(hit) is { } target)
         {
             int index = Config.CurrentItems.FindIndex(p => App.PathEquals(p, target.FullPath));
+            if (index >= 0 && ItemsList.ItemContainerGenerator.ContainerFromItem(target) is ListBoxItem container)
+            {
+                Rect bounds = container.TransformToAncestor(ItemsList).TransformBounds(new Rect(container.RenderSize));
+                return position.X > bounds.Left + bounds.Width / 2 ? index + 1 : index;
+            }
+
             if (index >= 0)
                 return index;
         }
@@ -923,12 +1217,17 @@ public partial class FenceWindow : Window
     private ContextMenu BuildItemMenu(FenceItem item)
     {
         var menu = new ContextMenu();
+        List<FenceItem> selected = SelectedItems();
+        if (!selected.Contains(item))
+            selected = new List<FenceItem> { item };
+
         menu.Items.Add(MakeItem("開啟", () => OpenItem(item), bold: true));
         menu.Items.Add(MakeItem("開啟檔案位置", () => ShowInExplorer(item)));
         if (IsStandard)
         {
             menu.Items.Add(new Separator());
-            menu.Items.Add(MakeItem("從分區移除（不會刪除檔案）", () => RemoveItem(item)));
+            string label = selected.Count == 1 ? "移出分區（放回桌面）" : $"把 {selected.Count} 個項目移出分區";
+            menu.Items.Add(MakeItem(label, () => RemoveItems(selected.Select(i => i.FullPath).ToList())));
         }
 
         menu.Items.Add(new Separator());
@@ -968,10 +1267,6 @@ public partial class FenceWindow : Window
             menu.Items.Add(MakeItem("新增分頁…", AddTab));
             menu.Items.Add(MakeItem("依名稱排序", SortByName));
             menu.Items.Add(MakeItem("自動整理規則…", EditRules));
-            var priorities = RulePriorityPresets
-                .Select(p => (object)MakeItem(p.Name, () => SetRulePriority(p.Value), isChecked: Config.RulePriority == p.Value))
-                .ToList();
-            menu.Items.Add(MakeItem("規則優先順序", null, priorities));
             menu.Items.Add(MakeItem("清除已不存在的項目", RemoveMissingItems));
         }
         else
@@ -990,6 +1285,8 @@ public partial class FenceWindow : Window
         menu.Items.Add(MakeItem("移到桌面頁面", null, pages));
         menu.Items.Add(MakeItem("新增分區", () => App.Current.CreateFence(FenceKind.Standard)));
         menu.Items.Add(MakeItem("刪除此分區", Delete));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(MakeItem("MyFences 設定…", () => SettingsWindow.ShowFor(App.Current)));
         return menu;
     }
 
@@ -1015,9 +1312,17 @@ public partial class FenceWindow : Window
 
     // ───────────── 動作 ─────────────
 
-    private void RemoveItem(FenceItem item)
+    /// <summary>移出分區（檔案不會刪除，桌面上的圖示會重新出現），可以復原。</summary>
+    private void RemoveItems(IReadOnlyCollection<string> paths)
     {
-        Config.CurrentItems.RemoveAll(p => App.PathEquals(p, item.FullPath));
+        if (paths.Count == 0)
+            return;
+
+        App.Current.PushUndo(paths.Count == 1
+            ? $"已把「{FenceItem.Create(paths.First()).DisplayName}」移出分區"
+            : $"已把 {paths.Count} 個項目移出分區");
+        foreach (List<string> items in Config.AllItemLists())
+            items.RemoveAll(p => paths.Any(path => App.PathEquals(p, path)));
         ReloadItems();
         App.Current.RequestSave();
     }
@@ -1091,58 +1396,33 @@ public partial class FenceWindow : Window
 
     private void EditRules()
     {
-        string current = string.Join(", ", Config.Rules);
-        while (true)
-        {
-            string? text = InputDialog.Ask(
-                "自動整理規則",
-                "桌面上符合規則的項目會自動放進這個分區。多條規則用逗號分隔，留白 = 不自動整理。\n\n" +
-                "  pdf 或 .pdf　副檔名\n" +
-                "  folder　　　資料夾\n" +
-                "  *　　　　　所有檔案\n" +
-                "  name:報表　 檔名包含「報表」（可用 * 萬用字元）\n" +
-                "  newer:7　　 7 天內修改過\n" +
-                "  older:30　　超過 30 天沒動\n" +
-                "  larger:100　大於 100 MB；smaller:1　小於 1 MB\n\n" +
-                "用 + 表示「而且」，例如：pdf+name:發票, xlsx+newer:7",
-                current);
-            if (text == null)
-                return;
-
-            List<string> rules = text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-            List<string> invalid = FenceRules.FindInvalidConditions(rules);
-            if (invalid.Count > 0)
-            {
-                MessageBox.Show("看不懂這些規則：\n" + string.Join("\n", invalid), "MyFences", MessageBoxButton.OK, MessageBoxImage.Warning);
-                current = text;
-                continue;
-            }
-
-            Config.Rules = rules;
-            break;
-        }
+        if (!RuleEditorWindow.Edit(Config))
+            return;
 
         App.Current.RequestSave();
         if (Config.Rules.Count == 0)
             return;
 
-        int count = App.Current.SortDesktop();
-        if (count > 0)
-            MessageBox.Show($"已依新規則放入 {count} 個項目。", "MyFences");
-    }
-
-    private void SetRulePriority(int priority)
-    {
-        Config.RulePriority = priority;
-        App.Current.RequestSave();
+        // 有放入項目時 SortDesktop 會自己顯示附「復原」的提示
+        if (App.Current.SortDesktop() == 0)
+            Toast.ShowMessage("規則已儲存，桌面上目前沒有新的符合項目。");
     }
 
     private void RemoveMissingItems()
     {
-        int removed = Config.AllItemLists().Sum(items => items.RemoveAll(p => !File.Exists(p) && !Directory.Exists(p)));
+        static bool Missing(string p) => !File.Exists(p) && !Directory.Exists(p);
+        int count = Config.AllItemLists().Sum(items => items.Count(Missing));
+        if (count == 0)
+        {
+            Toast.ShowMessage("沒有找不到的項目。");
+            return;
+        }
+
+        App.Current.PushUndo($"已清除 {count} 個找不到的項目");
+        foreach (List<string> items in Config.AllItemLists())
+            items.RemoveAll(Missing);
         ReloadItems();
         App.Current.RequestSave();
-        MessageBox.Show($"已清除 {removed} 個項目。", "MyFences");
     }
 
     private void ChangeFolder()
@@ -1158,12 +1438,6 @@ public partial class FenceWindow : Window
         App.Current.RequestSave();
     }
 
-    private void Delete()
-    {
-        var result = MessageBox.Show(
-            $"確定要刪除分區「{Config.Name}」？\n（只會移除分區，裡面的檔案不受影響）",
-            "MyFences", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (result == MessageBoxResult.Yes)
-            App.Current.DeleteFence(this);
-    }
+    /// <summary>不用再確認：刪錯了可以從右下角的提示復原。</summary>
+    private void Delete() => App.Current.DeleteFence(this);
 }
