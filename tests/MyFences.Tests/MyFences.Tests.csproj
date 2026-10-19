@@ -13,6 +13,7 @@
     <Compile Include="..\..\src\MyFences\Models\FenceConfig.cs" Link="FenceConfig.cs" />
     <Compile Include="..\..\src\MyFences\Models\LayoutMath.cs" Link="LayoutMath.cs" />
     <Compile Include="..\..\src\MyFences\Models\IconLayout.cs" Link="IconLayout.cs" />
+    <Compile Include="..\..\src\MyFences\Models\DesktopGrid.cs" Link="DesktopGrid.cs" />
   </ItemGroup>
 
   <ItemGroup>

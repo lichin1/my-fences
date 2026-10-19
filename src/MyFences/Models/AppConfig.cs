@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace MyFences.Models;
@@ -19,8 +20,25 @@ public sealed class AppConfig
     /// <summary>第一次觸發雙擊隱藏時提示過了沒。</summary>
     public bool QuickHideHintShown { get; set; }
 
-    /// <summary>舊版本設成隱藏的桌面檔案；新版本啟動時會全部還原並清空（只為了升級用）。</summary>
+    /// <summary>舊版本設成隱藏的桌面檔案；啟動時會全部還原並清空（只為了升級用）。</summary>
     public List<string> HiddenDesktopItems { get; set; } = new();
+
+    // ───────────── 桌面（分區外的圖示）─────────────
+
+    /// <summary>桌面圖示大小（WPF 單位）。</summary>
+    public double DesktopIconSize { get; set; } = 48;
+
+    /// <summary>把圖示對齊格線。</summary>
+    public bool SnapToGrid { get; set; } = true;
+
+    /// <summary>自動排列（依名稱，由左上往下排）。</summary>
+    public bool AutoArrange { get; set; }
+
+    /// <summary>分區外的桌面圖示位置（螢幕像素，圖示格子的左上角），key 是完整路徑或 ::{GUID}。</summary>
+    public Dictionary<string, SavedPoint> DesktopPositions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>MyFences 啟動前，Windows 的「顯示桌面圖示」是不是開著（結束時還原；當掉後重開也還記得）。</summary>
+    public bool? ExplorerIconsWereVisible { get; set; }
 
     /// <summary>桌面頁數（至少 1）。</summary>
     public int PageCount { get; set; } = 1;
@@ -63,6 +81,13 @@ public sealed class AppConfig
         });
         return config;
     }
+}
+
+/// <summary>螢幕像素座標的一個點。</summary>
+public sealed class SavedPoint
+{
+    public int X { get; set; }
+    public int Y { get; set; }
 }
 
 /// <summary>某個螢幕組合下，一個分區的位置。</summary>

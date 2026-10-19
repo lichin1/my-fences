@@ -5,12 +5,12 @@ using System.Windows.Threading;
 
 namespace MyFences.Services;
 
-/// <summary>監看桌面資料夾的新增與改名，事件會回到 UI 執行緒。</summary>
+/// <summary>監看桌面資料夾的新增、改名與刪除，事件會回到 UI 執行緒。</summary>
 internal sealed class DesktopWatcher : IDisposable
 {
     private readonly List<FileSystemWatcher> _watchers = new();
 
-    public DesktopWatcher(Dispatcher dispatcher, Action<string> created, Action<string, string> renamed)
+    public DesktopWatcher(Dispatcher dispatcher, Action<string> created, Action<string, string> renamed, Action<string> deleted)
     {
         foreach (string dir in DesktopHelper.GetDesktopDirectories())
         {
@@ -19,10 +19,16 @@ internal sealed class DesktopWatcher : IDisposable
                 var watcher = new FileSystemWatcher(dir)
                 {
                     IncludeSubdirectories = false,
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.Attributes,
+                    InternalBufferSize = 64 * 1024,
                 };
+                // 屬性改變（例如設成隱藏）也會影響桌面上看不看得到
+                watcher.Changed += (_, e) => dispatcher.InvokeAsync(() => deleted(e.FullPath));
                 watcher.Created += (_, e) => dispatcher.InvokeAsync(() => created(e.FullPath));
                 watcher.Renamed += (_, e) => dispatcher.InvokeAsync(() => renamed(e.OldFullPath, e.FullPath));
+                watcher.Deleted += (_, e) => dispatcher.InvokeAsync(() => deleted(e.FullPath));
+                // 一次大量變動時事件會滿出來：當作整個桌面都要重新讀
+                watcher.Error += (_, _) => dispatcher.InvokeAsync(() => deleted(dir));
                 watcher.EnableRaisingEvents = true;
                 _watchers.Add(watcher);
             }

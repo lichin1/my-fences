@@ -13,7 +13,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AssemblyName>MyFences</AssemblyName>
     <RootNamespace>MyFences</RootNamespace>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <!-- WPF 程式用 manifest 設定 DPI，不適用 WinForms 的 SetHighDpiMode 建議 -->
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>

@@ -1,6 +1,4 @@
-using System;
 using System.ComponentModel;
-using System.IO;
 using System.Windows.Media;
 
 namespace MyFences.Models;
@@ -34,28 +32,6 @@ public sealed class FenceItem : INotifyPropertyChanged
         }
     }
 
-    public static FenceItem Create(string path)
-    {
-        bool isDir = Directory.Exists(path);
-        bool exists = isDir || File.Exists(path);
-        return new FenceItem(path, GetDisplayName(path, isDir), exists);
-    }
-
-    private static string GetDisplayName(string path, bool isDir)
-    {
-        if (isDir)
-        {
-            string name = new DirectoryInfo(path).Name;
-            return string.IsNullOrEmpty(name) ? path : name;
-        }
-
-        string ext = Path.GetExtension(path);
-        if (ext.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
-            ext.Equals(".url", StringComparison.OrdinalIgnoreCase))
-        {
-            return Path.GetFileNameWithoutExtension(path);
-        }
-
-        return Path.GetFileName(path);
-    }
+    public static FenceItem Create(string path) =>
+        new(path, Services.ShellItems.GetDisplayName(path), Services.ShellItems.Exists(path));
 }

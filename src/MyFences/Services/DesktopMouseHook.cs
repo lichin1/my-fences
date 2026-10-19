@@ -11,16 +11,23 @@ namespace MyFences.Services;
 /// <list type="bullet">
 /// <item>雙擊桌面空白處 → 隱藏 / 顯示分區（不吃掉事件；雙擊在圖示上開檔時不觸發）</item>
 /// <item>在桌面按住 Ctrl + 左鍵拖曳 → 畫出新分區（這組滑鼠事件會被吃掉，桌面不會跑出選取框）</item>
+/// <item>在桌面空白處按下 / 拖曳 → 取消選取、框選 MyFences 畫的桌面圖示（不吃掉事件）</item>
+/// <item>在桌面空白處按右鍵 → 記下位置（從 Windows 選單「新增」「貼上」的東西就放在那裡）</item>
 /// </list>
 /// </summary>
 internal sealed class DesktopMouseHook : IDisposable
 {
     private const int VK_CONTROL = 0x11;
+    private const int SM_CXDRAG = 68;
+    private const int SM_CYDRAG = 69;
 
     private readonly Dispatcher _dispatcher;
     private readonly Action _onDoubleClick;
     private readonly Action<PixelRect?> _onDrawing; // null = 結束（取消或完成）
     private readonly Action<PixelRect> _onDrawn;
+    private readonly Action<PixelPoint> _onPress;
+    private readonly Action<PixelRect?> _onBoxSelect; // null = 放開了
+    private readonly Action<PixelPoint> _onRightClick;
     private readonly LowLevelMouseProc _proc; // 必須留著參照，否則會被 GC 回收
     private IntPtr _hook;
 
@@ -33,12 +40,23 @@ internal sealed class DesktopMouseHook : IDisposable
     private POINT _drawCurrent;
     private bool _drawUpdatePending;
 
-    public DesktopMouseHook(Dispatcher dispatcher, Action onDoubleClick, Action<PixelRect?> onDrawing, Action<PixelRect> onDrawn)
+    private bool _pressedOnDesktop;
+    private bool _boxing;
+    private POINT _boxStart;
+    private POINT _boxCurrent;
+    private bool _boxUpdatePending;
+
+    public DesktopMouseHook(
+        Dispatcher dispatcher, Action onDoubleClick, Action<PixelRect?> onDrawing, Action<PixelRect> onDrawn,
+        Action<PixelPoint> onPress, Action<PixelRect?> onBoxSelect, Action<PixelPoint> onRightClick)
     {
         _dispatcher = dispatcher;
         _onDoubleClick = onDoubleClick;
         _onDrawing = onDrawing;
         _onDrawn = onDrawn;
+        _onPress = onPress;
+        _onBoxSelect = onBoxSelect;
+        _onRightClick = onRightClick;
         _proc = HookProc;
         _hook = SetWindowsHookEx(WH_MOUSE_LL, _proc, GetModuleHandle(null), 0);
     }
@@ -83,6 +101,43 @@ internal sealed class DesktopMouseHook : IDisposable
                 return msg == WM_LBUTTONDOWN ? new IntPtr(1) : CallNextHookEx(_hook, nCode, wParam, lParam);
             }
 
+            if (_pressedOnDesktop)
+            {
+                if (msg == WM_MOUSEMOVE)
+                {
+                    _boxCurrent = info.pt;
+                    if (!_boxing && (Math.Abs(info.pt.x - _boxStart.x) > GetSystemMetrics(SM_CXDRAG) ||
+                                     Math.Abs(info.pt.y - _boxStart.y) > GetSystemMetrics(SM_CYDRAG)))
+                    {
+                        _boxing = true;
+                        _hasLastClick = false;
+                    }
+
+                    if (_boxing)
+                        QueueBoxUpdate();
+                }
+                else if (msg == WM_LBUTTONUP)
+                {
+                    _pressedOnDesktop = false;
+                    if (_boxing)
+                    {
+                        _boxing = false;
+                        PixelRect rect = RectFrom(_boxStart, info.pt);
+                        _dispatcher.InvokeAsync(() =>
+                        {
+                            _onBoxSelect(rect);
+                            _onBoxSelect(null);
+                        });
+                    }
+                }
+            }
+
+            if (msg == WM_RBUTTONDOWN && DesktopHelper.IsDesktopAt(info.pt, out _))
+            {
+                var pt = new PixelPoint(info.pt.x, info.pt.y);
+                _dispatcher.InvokeAsync(() => _onRightClick(pt));
+            }
+
             if (msg == WM_LBUTTONDOWN)
             {
                 bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -93,6 +148,15 @@ internal sealed class DesktopMouseHook : IDisposable
                     _hasLastClick = false;
                     _drawStart = _drawCurrent = info.pt;
                     return new IntPtr(1); // 吃掉，桌面就不會開始自己的選取框
+                }
+
+                if (onDesktop)
+                {
+                    _pressedOnDesktop = true;
+                    _boxing = false;
+                    _boxStart = _boxCurrent = info.pt;
+                    var pt = new PixelPoint(info.pt.x, info.pt.y);
+                    _dispatcher.InvokeAsync(() => _onPress(pt));
                 }
 
                 OnLeftButtonDown(info.pt, info.time, onDesktop, listView);
@@ -114,6 +178,20 @@ internal sealed class DesktopMouseHook : IDisposable
             _drawUpdatePending = false;
             if (_drawing)
                 _onDrawing(RectFrom(_drawStart, _drawCurrent));
+        }, DispatcherPriority.Render);
+    }
+
+    private void QueueBoxUpdate()
+    {
+        if (_boxUpdatePending)
+            return;
+
+        _boxUpdatePending = true;
+        _dispatcher.InvokeAsync(() =>
+        {
+            _boxUpdatePending = false;
+            if (_boxing)
+                _onBoxSelect(RectFrom(_boxStart, _boxCurrent));
         }, DispatcherPriority.Render);
     }
 
@@ -146,7 +224,8 @@ internal sealed class DesktopMouseHook : IDisposable
         {
             // 等桌面處理完點擊：點在空白處會取消所有選取，點在圖示上則會選取該圖示
             await Task.Delay(100);
-            if (listView == IntPtr.Zero || SendMessage(listView, LVM_GETSELECTEDCOUNT, IntPtr.Zero, IntPtr.Zero) == IntPtr.Zero)
+            // Windows 的桌面圖示被 MyFences 接管（藏起來）時，點到的一定是空白處
+            if (!DesktopHelper.IsListViewVisible(listView) || SendMessage(listView, LVM_GETSELECTEDCOUNT, IntPtr.Zero, IntPtr.Zero) == IntPtr.Zero)
                 _onDoubleClick();
         });
     }
