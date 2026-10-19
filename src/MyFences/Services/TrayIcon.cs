@@ -24,8 +24,9 @@ internal sealed class TrayIcon : IDisposable
             if (app.SortDesktop() == 0)
                 Views.Toast.ShowMessage("桌面已經很整齊了，沒有要整理的項目");
         });
+        menu.Items.Add("依名稱排列桌面圖示", null, (_, _) => app.ArrangeDesktopByName());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("顯示 / 隱藏所有分區\tCtrl+Alt+F", null, (_, _) => app.ToggleFences());
+        menu.Items.Add("顯示 / 隱藏分區和桌面圖示\tCtrl+Alt+F", null, (_, _) => app.ToggleFences());
         menu.Items.Add(BuildPagesMenu(app));
         menu.Items.Add(new ToolStripSeparator());
         var settings = new ToolStripMenuItem("設定…") { Font = new Font(menu.Font, FontStyle.Bold) };

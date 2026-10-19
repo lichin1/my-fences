@@ -72,12 +72,26 @@ internal sealed class SettingsWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(Header("桌面"));
-        panel.Children.Add(Toggle("放進分區的檔案從桌面上隱藏（拿出分區或結束 MyFences 時會還原）",
-            () => _app.Config.HideFencedDesktopIcons, v => _app.SetHideFencedDesktopIcons(v)));
-        panel.Children.Add(Toggle("雙擊桌面空白處，隱藏 / 顯示所有分區",
+        panel.Children.Add(Toggle("雙擊桌面空白處，隱藏 / 顯示所有分區和桌面圖示",
             () => _app.Config.QuickHideEnabled, v => _app.SetQuickHide(v)));
-        panel.Children.Add(Toggle("隱藏所有系統桌面圖示（桌面只剩分區）",
-            () => !DesktopHelper.AreDesktopIconsVisible(), v => DesktopHelper.SetDesktopIconsVisible(!v)));
+        panel.Children.Add(Toggle("自動排列桌面圖示（依名稱，從左上角往下排）",
+            () => _app.Config.AutoArrange, v => _app.SetAutoArrange(v)));
+        panel.Children.Add(Toggle("桌面圖示對齊格線",
+            () => _app.Config.SnapToGrid, v => _app.SetSnapToGrid(v)));
+
+        var sizes = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+        sizes.Children.Add(new TextBlock { Text = "桌面圖示大小：", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 6) });
+        foreach ((string name, double size) in new[] { ("小", 32.0), ("中", 48.0), ("大", 64.0) })
+            sizes.Children.Add(Action(name, () => _app.SetDesktopIconSize(size), primary: Math.Abs(_app.Config.DesktopIconSize - size) < 0.1));
+        sizes.Children.Add(Action("依名稱排列一次", _app.ArrangeDesktopByName));
+        panel.Children.Add(sizes);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "MyFences 執行時會關掉 Windows 的「顯示桌面圖示」，改由 MyFences 顯示（結束時會還原）。桌面空白處的右鍵選單還是 Windows 原本的。",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.7,
+            Margin = new Thickness(0, 4, 0, 0),
+        });
 
         panel.Children.Add(Header("分區"));
         panel.Children.Add(Toggle("桌面出現新檔案時，自動依規則放進分區",
@@ -280,7 +294,9 @@ internal sealed class SettingsWindow : Window
 
         Section("桌面",
             ("Ctrl + 左鍵拖曳", "在桌面空白處畫出新分區"),
-            ("雙擊桌面空白處", "隱藏 / 顯示所有分區"),
+            ("雙擊桌面空白處", "隱藏 / 顯示所有分區和桌面圖示"),
+            ("在空白處按右鍵", "Windows 原本的桌面選單（新增、貼上、顯示設定…）"),
+            ("在空白處拖曳", "框選桌面圖示"),
             ("Ctrl + Alt + F", "隱藏 / 顯示所有分區"),
             ("Ctrl + Alt + ← / →", "切換桌面頁面"),
             ("點桌面底部的圓點", "切換到那一頁（有兩頁以上才會出現）"));
@@ -291,10 +307,14 @@ internal sealed class SettingsWindow : Window
             ("滑鼠移到標題列", "出現新增分頁、外觀、收合、更多設定按鈕"),
             ("把資料夾拖到標題列", "空的分區直接變成資料夾分區；有東西的分區會在旁邊另外建一個"));
         Section("圖示",
-            ("把檔案拖進分區", "放進分區，桌面上的圖示會隱藏"),
-            ("把圖示拖回桌面", "移出分區，桌面上的圖示會重新出現"),
+            ("把圖示拖進分區", "放進分區（每個圖示只會在一個地方：分區或桌面）"),
+            ("把圖示拖回桌面", "移出分區，放在放開的位置"),
+            ("拖到資料夾 / 資源回收筒", "搬進去 / 刪除，跟 Windows 桌面一樣"),
+            ("右鍵點圖示", "開啟、開啟方式、剪下、複製、刪除、重新命名、內容"),
             ("Ctrl / Shift + 點選、拖框框選", "一次選很多個，可以一起拖"),
-            ("Delete", "把選取的圖示移出分區"),
+            ("Delete / Shift+Delete", "刪除到資源回收筒 / 永久刪除"),
+            ("Ctrl + C / X / V", "複製 / 剪下 / 貼上（可以跟檔案總管互相貼）"),
+            ("F2（桌面上）", "重新命名圖示；Ctrl+Shift+N 新增資料夾"),
             ("Ctrl + Z", "復原上一個動作（也可以按右下角提示的「復原」）"),
             ("雙擊分頁標籤", "直接改分頁名稱"),
             ("滑鼠移到分頁標籤上", "出現 ✕，點一下刪除分頁"),

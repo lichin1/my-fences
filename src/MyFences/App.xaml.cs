@@ -15,6 +15,18 @@ namespace MyFences;
 public partial class App : Application
 {
     private readonly List<FenceWindow> _windows = new();
+    private readonly List<DesktopCanvas> _canvases = new();
+    private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _pruneTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly Dictionary<string, PixelPoint> _pendingPlacements = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pendingPrune = new(StringComparer.OrdinalIgnoreCase);
+    private List<string> _desktopItems = new();
+    private bool _refreshEnumerate;
+    private PixelPoint? _lastRightClick;
+    private DateTime _lastRightClickTime;
+    private string? _renameAfterRefresh;
+    private bool _desktopLoaded;
+    private bool _canvasRebuildPending;
     private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _desktopCheckTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _dailySnapshotTimer = new() { Interval = TimeSpan.FromHours(1) };
@@ -30,7 +42,6 @@ public partial class App : Application
     private DesktopSelectionOverlay? _drawOverlay;
     private IntPtr _progman;
     private bool _fencesHidden;
-    private bool _sessionEnding;
 
     public static new App Current => (App)Application.Current;
 
@@ -59,25 +70,47 @@ public partial class App : Application
         };
 
         Config = ConfigStore.Load();
+        // JSON 讀回來的字典不分大小寫的設定會不見，重建一次
+        var positions = new Dictionary<string, SavedPoint>(StringComparer.OrdinalIgnoreCase);
+        foreach ((string key, SavedPoint value) in Config.DesktopPositions)
+            positions[key] = value;
+        Config.DesktopPositions = positions;
+
         _saveTimer.Tick += (_, _) =>
         {
             _saveTimer.Stop();
-            SyncDesktopIcons();
+            LayoutDesktop(); // 分區移動 / 縮放後，被蓋住的桌面圖示要讓開
             RecordMonitorLayout();
             ConfigStore.Save(Config);
         };
-        // 登出 / 關機時不還原桌面圖示，下次開機 MyFences 啟動後也還是藏著，比較不會閃一下
-        SessionEnding += (_, _) => _sessionEnding = true;
+        _refreshTimer.Tick += (_, _) =>
+        {
+            _refreshTimer.Stop();
+            RefreshDesktopNow(_refreshEnumerate);
+        };
+        _pruneTimer.Tick += (_, _) =>
+        {
+            _pruneTimer.Stop();
+            PruneDeletedFromFences();
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => RestoreExplorerIcons();
+
+        UnhideLegacyHiddenFiles();
+        TakeOverDesktopIcons();
 
         Config.PageCount = Math.Max(Math.Max(1, Config.PageCount), Config.Fences.Select(f => f.Page + 1).DefaultIfEmpty(1).Max());
         Config.CurrentPage = Math.Clamp(Config.CurrentPage, 0, Config.PageCount - 1);
+
+        // 先建立桌面圖示層，分區才能黏在它上面（分區一定蓋在桌面圖示之上）
+        _screens = GetScreens();
+        DesktopHelper.OwnerProvider = () => _canvases.Count > 0 ? _canvases[^1].Handle : IntPtr.Zero;
+        UpdateCanvases();
 
         foreach (FenceConfig fence in Config.Fences)
             OpenFence(fence);
         UpdatePager();
 
         // 螢幕組合跟上次結束時不同（例如筆電拔掉外接螢幕後才開機）就換算一次位置
-        _screens = GetScreens();
         if (Config.LastScreens.Count > 0)
             RemapForScreens(Config.LastScreens, _screens);
         Config.LastScreens = _screens;
@@ -96,14 +129,20 @@ public partial class App : Application
         _hotkeys.Register(ModifierKeys.Control | ModifierKeys.Alt, Key.Right, () => SwitchPage(Config.CurrentPage + 1));
         _hotkeys.Register(ModifierKeys.Control | ModifierKeys.Alt, Key.Left, () => SwitchPage(Config.CurrentPage - 1));
 
-        _desktopWatcher = new DesktopWatcher(Dispatcher, OnDesktopItemCreated, OnDesktopItemRenamed);
+        _desktopWatcher = new DesktopWatcher(Dispatcher, OnDesktopItemCreated, OnDesktopItemRenamed, OnDesktopItemChanged);
 
         // Explorer 重新啟動後 Progman 會換一個，要重新把分區黏回桌面
         _progman = DesktopHelper.GetProgman();
-        _desktopCheckTimer.Tick += (_, _) => CheckDesktopRestarted();
+        _desktopCheckTimer.Tick += (_, _) =>
+        {
+            CheckDesktopRestarted();
+            // Windows 的桌面圖示一直保持關閉（例如 Explorer 重新啟動後又打開了）
+            if (DesktopHelper.AreDesktopIconsVisible())
+                DesktopHelper.SetDesktopIconsVisible(false);
+        };
         _desktopCheckTimer.Start();
 
-        SyncDesktopIcons();
+        RefreshDesktopNow(enumerate: true);
 
         // Windows 切換淺色 / 深色或換強調色時，分區跟著變
         ThemeHelper.StartListening();
@@ -114,7 +153,9 @@ public partial class App : Application
             UpdatePager();
         };
 
-        _mouseHook = new DesktopMouseHook(Dispatcher, OnDesktopDoubleClick, OnDesktopDrawing, OnDesktopDrawn)
+        _mouseHook = new DesktopMouseHook(
+            Dispatcher, OnDesktopDoubleClick, OnDesktopDrawing, OnDesktopDrawn,
+            OnDesktopPress, OnDesktopBoxSelect, OnDesktopRightClick)
         {
             QuickHideEnabled = Config.QuickHideEnabled,
         };
@@ -126,7 +167,7 @@ public partial class App : Application
         if (!File.Exists(ConfigStore.ConfigPath))
         {
             ConfigStore.Save(Config);
-            _tray.ShowBalloon("已建立預設分區。把桌面上的檔案拖進分區；在桌面按住 Ctrl 拖曳可以畫出新分區。");
+            _tray.ShowBalloon("MyFences 已接管桌面圖示。把圖示拖進分區；在桌面按住 Ctrl 拖曳可以畫出新分區。");
         }
     }
 
@@ -141,10 +182,10 @@ public partial class App : Application
         if (_mutex != null)
         {
             _saveTimer.Stop();
+            _refreshTimer.Stop();
             RecordMonitorLayout();
-            // 結束 MyFences 時把藏起來的桌面圖示還回去，免得檔案「不見」
-            if (!_sessionEnding)
-                SetDesktopIconsUnhidden();
+            // 結束 MyFences 時把 Windows 的桌面圖示還回去，免得檔案「不見」
+            RestoreExplorerIcons();
             ConfigStore.Save(Config);
             _mutex.ReleaseMutex();
             _mutex.Dispose();
@@ -229,11 +270,12 @@ public partial class App : Application
 
     public void DeleteFence(FenceWindow window)
     {
-        // 分區裡的檔案會放回桌面（取消隱藏）
+        // 分區裡的桌面檔案會回到桌面上
         PushUndo($"已刪除「{window.Config.Name}」，裡面的檔案都放回桌面了");
         Config.Fences.Remove(window.Config);
         _windows.Remove(window);
         window.CloseIntentionally();
+        RefreshDesktop(enumerate: false);
         RequestSave();
     }
 
@@ -309,6 +351,15 @@ public partial class App : Application
 
     private void UpdateVisibility()
     {
+        // 桌面圖示層先顯示，分區才會蓋在它上面
+        foreach (DesktopCanvas canvas in _canvases)
+        {
+            if (!_fencesHidden && !canvas.IsVisible)
+                canvas.Show();
+            else if (_fencesHidden && canvas.IsVisible)
+                canvas.Hide();
+        }
+
         foreach (FenceWindow window in _windows)
         {
             bool show = ShouldShow(window);
@@ -319,6 +370,7 @@ public partial class App : Application
         }
 
         UpdatePager();
+        LayoutDesktop();
     }
 
     /// <summary>桌面底部的頁面圓點：兩頁以上、而且分區沒被隱藏時才顯示。</summary>
@@ -336,49 +388,6 @@ public partial class App : Application
             Config.CurrentPage,
             page => Config.Fences.Count(f => f.Page == page),
             SwitchPage);
-    }
-
-    public void SetHideFencedDesktopIcons(bool enabled)
-    {
-        Config.HideFencedDesktopIcons = enabled;
-        SyncDesktopIcons();
-        RequestSave();
-    }
-
-    /// <summary>讓桌面上「已放進分區的檔案」都設成隱藏，拿出分區的還原。</summary>
-    public void SyncDesktopIcons()
-    {
-        IEnumerable<string> fenced = Config.HideFencedDesktopIcons
-            ? Config.Fences.Where(f => f.Kind == FenceKind.Standard).SelectMany(f => f.AllItemLists()).SelectMany(l => l)
-            : Enumerable.Empty<string>();
-
-        DesktopIconSync.Plan plan = DesktopIconSync.Compute(
-            fenced,
-            DesktopHelper.GetDesktopDirectories(),
-            Config.HiddenDesktopItems,
-            p => File.Exists(p) || Directory.Exists(p),
-            DesktopHelper.IsHidden);
-
-        foreach (string path in plan.ToUnhide)
-        {
-            DesktopHelper.TrySetHidden(path, false);
-            Config.HiddenDesktopItems.RemoveAll(p => PathEquals(p, path));
-        }
-
-        foreach (string path in plan.ToHide)
-        {
-            // 例如公用桌面的檔案需要系統管理員權限，改不了就算了，照樣顯示在分區裡
-            if (DesktopHelper.TrySetHidden(path, true))
-                Config.HiddenDesktopItems.Add(path);
-        }
-    }
-
-    private void SetDesktopIconsUnhidden()
-    {
-        foreach (string path in Config.HiddenDesktopItems)
-            DesktopHelper.TrySetHidden(path, false);
-        Config.HiddenDesktopItems.Clear();
-        ConfigStore.Save(Config);
     }
 
     public void SetLocked(bool locked)
@@ -402,7 +411,7 @@ public partial class App : Application
     {
         CreateSnapshot("整理桌面前自動備份", SnapshotKind.Backup);
         string undoState = SerializeFences();
-        int count = ApplyRules(DesktopHelper.EnumerateDesktopItems());
+        int count = ApplyRules(ShellItems.EnumerateDesktop().Where(id => !ShellItems.IsSystemItem(id)));
         if (count > 0)
             PushUndo($"已整理 {count} 個桌面項目", undoState);
         return count;
@@ -447,6 +456,7 @@ public partial class App : Application
         foreach (FenceConfig fence in Config.Fences)
             OpenFence(fence);
         UpdatePager();
+        RefreshDesktop(enumerate: false);
         RequestSave();
     }
 
@@ -513,7 +523,11 @@ public partial class App : Application
         foreach (FenceWindow window in touched)
             window.ReloadItems();
         if (count > 0)
+        {
+            RefreshDesktop(enumerate: false);
             RequestSave();
+        }
+
         return count;
     }
 
@@ -558,18 +572,70 @@ public partial class App : Application
 
     private void OnDesktopItemCreated(string path)
     {
-        if (Config.AutoSortNewItems)
-            ApplyRules(new[] { path });
+        _pendingPrune.Remove(path);
+        bool explicitPlace = _pendingPlacements.ContainsKey(path) || Config.DesktopPositions.ContainsKey(path);
+        if (!explicitPlace)
+        {
+            // 從 Windows 桌面右鍵「新增」「貼上」：放在按右鍵的地方；從其他地方拖到桌面：放在滑鼠位置
+            bool recentRightClick = _lastRightClick != null && DateTime.Now - _lastRightClickTime < TimeSpan.FromMinutes(1);
+            if (recentRightClick)
+            {
+                _pendingPlacements[path] = _lastRightClick!.Value;
+                // 「新增資料夾」「新增 文字文件」這類：跟 Windows 一樣直接進入改名
+                string name = Path.GetFileName(path);
+                if (name.StartsWith("新增", StringComparison.Ordinal) || name.StartsWith("New ", StringComparison.OrdinalIgnoreCase))
+                    _renameAfterRefresh = path;
+            }
+            else if (GetCursorPixel() is { } cursor && DesktopHelper.IsCursorOverDesktop())
+            {
+                _pendingPlacements[path] = cursor;
+            }
+
+            if (Config.AutoSortNewItems && _renameAfterRefresh == null)
+                ApplyRules(new[] { path });
+        }
+
+        RefreshDesktop(enumerate: true);
     }
 
     private void OnDesktopItemRenamed(string oldPath, string newPath)
     {
-        // 藏起來的檔案改名後屬性還在，追蹤清單也要跟著改名，之後才還原得了
-        int tracked = Config.HiddenDesktopItems.FindIndex(p => PathEquals(p, oldPath));
-        if (tracked >= 0)
-            Config.HiddenDesktopItems[tracked] = newPath;
+        _pendingPrune.Remove(newPath);
+        if (!ReplacePath(oldPath, newPath))
+        {
+            OnDesktopItemCreated(newPath);
+            return;
+        }
 
-        bool updated = false;
+        RefreshDesktop(enumerate: true);
+    }
+
+    /// <summary>被刪除、屬性改變，或事件太多來不及處理（path 是整個桌面資料夾）。</summary>
+    private void OnDesktopItemChanged(string path)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path))
+        {
+            // 有些程式存檔是「刪掉再寫回」：等一下還是不在，才從分區拿掉
+            _pendingPrune.Add(path);
+            _pruneTimer.Stop();
+            _pruneTimer.Start();
+        }
+
+        RefreshDesktop(enumerate: true);
+    }
+
+    private void PruneDeletedFromFences()
+    {
+        List<string> gone = _pendingPrune.Where(p => !File.Exists(p) && !Directory.Exists(p)).ToList();
+        _pendingPrune.Clear();
+        if (gone.Count > 0)
+            RemoveFromAllFences(gone);
+    }
+
+    /// <summary>項目改名 / 搬移後，分區和桌面位置都跟著換。回傳有沒有找到。</summary>
+    private bool ReplacePath(string oldPath, string newPath)
+    {
+        bool found = false;
         foreach (FenceWindow window in _windows)
         {
             foreach (List<string> items in window.Config.AllItemLists())
@@ -580,14 +646,585 @@ public partial class App : Application
 
                 items[index] = newPath;
                 window.ReloadItems();
-                updated = true;
+                found = true;
             }
         }
 
-        if (updated)
+        if (Config.DesktopPositions.Remove(oldPath, out SavedPoint? point))
+        {
+            Config.DesktopPositions[newPath] = point;
+            found = true;
+        }
+
+        if (_pendingPlacements.Remove(oldPath, out PixelPoint pending))
+            _pendingPlacements[newPath] = pending;
+
+        if (found)
             RequestSave();
+        return found;
+    }
+
+    private void RemoveFromAllFences(IReadOnlyCollection<string> paths)
+    {
+        bool changed = false;
+        foreach (FenceWindow window in _windows)
+        {
+            if (window.Config.Kind != FenceKind.Standard)
+                continue;
+
+            int removed = 0;
+            foreach (List<string> items in window.Config.AllItemLists())
+                removed += items.RemoveAll(p => paths.Any(path => PathEquals(p, path)));
+            if (removed > 0)
+            {
+                window.ReloadItems();
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            RefreshDesktop(enumerate: false);
+            RequestSave();
+        }
+    }
+
+    // ───────────── 桌面圖示（分區外）─────────────
+
+    /// <summary>使用者自己的桌面資料夾（新增、貼上的東西放這裡，跟 Windows 一樣）。</summary>
+    private static string UserDesktop => Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+
+    /// <summary>
+    /// 每個桌面項目只有一個家（MECE）：在某個分區的分頁裡，或者在桌面上的某個位置。
+    /// 稍後重新整理（短時間內很多變動只做一次）；enumerate = 要重新讀桌面資料夾。
+    /// </summary>
+    public void RefreshDesktop(bool enumerate)
+    {
+        _refreshEnumerate |= enumerate;
+        _refreshTimer.Stop();
+        _refreshTimer.Start();
+    }
+
+    private void RefreshDesktopNow(bool enumerate)
+    {
+        _refreshTimer.Stop();
+        _refreshEnumerate = false;
+        if (enumerate || !_desktopLoaded)
+        {
+            _desktopItems = ShellItems.EnumerateDesktop();
+            _desktopLoaded = true;
+        }
+
+        LayoutDesktop();
+
+        if (_renameAfterRefresh is { } rename)
+        {
+            _renameAfterRefresh = null;
+            CanvasOf(rename)?.BeginRename(rename);
+        }
+    }
+
+    /// <summary>分區外的桌面項目（每頁都顯示）。</summary>
+    private List<string> LooseItems()
+    {
+        var fenced = new HashSet<string>(
+            Config.Fences.Where(f => f.Kind == FenceKind.Standard).SelectMany(f => f.AllItemLists()).SelectMany(l => l),
+            StringComparer.OrdinalIgnoreCase);
+        return _desktopItems.Where(id => !fenced.Contains(id)).ToList();
+    }
+
+    /// <summary>算出每個桌面圖示的位置，交給各螢幕的圖示層顯示。</summary>
+    private void LayoutDesktop()
+    {
+        if (_canvases.Count == 0 || !_desktopLoaded)
+            return;
+
+        List<string> loose = LooseItems();
+        var looseSet = new HashSet<string>(loose, StringComparer.OrdinalIgnoreCase);
+        // 不在桌面上的位置記錄清掉；但資料夾本身暫時讀不到（例如 OneDrive 還沒好）時先留著
+        foreach (string key in Config.DesktopPositions.Keys.Where(k => !looseSet.Contains(k)).ToList())
+        {
+            bool folderMissing = !ShellItems.IsSystemItem(key) && Path.GetDirectoryName(key) is { } dir && !Directory.Exists(dir);
+            if (!folderMissing)
+                Config.DesktopPositions.Remove(key);
+        }
+
+        List<PixelRect> allFences = _windows.Select(w => w.GetLayoutBounds()).OfType<PixelRect>().ToList();
+        List<PixelRect> visibleFences = _windows.Where(ShouldShow).Select(w => w.GetLayoutBounds()).OfType<PixelRect>().ToList();
+
+        var placed = new Dictionary<string, PixelPoint>(StringComparer.OrdinalIgnoreCase);
+        var occupied = new List<PixelPoint>();
+
+        if (Config.AutoArrange)
+        {
+            foreach (string id in SortForArrange(loose))
+            {
+                PixelPoint spot = FindSpot(null, allFences, occupied);
+                placed[id] = spot;
+                occupied.Add(spot);
+            }
+        }
         else
-            OnDesktopItemCreated(newPath);
+        {
+            // 1. 原本就有位置、還在螢幕上、沒被分區蓋住的，不動
+            var needSpot = new List<string>();
+            foreach (string id in loose)
+            {
+                if (!_pendingPlacements.ContainsKey(id) &&
+                    Config.DesktopPositions.TryGetValue(id, out SavedPoint? saved) &&
+                    CanvasAt(new PixelPoint(saved.X, saved.Y)) is { } canvas)
+                {
+                    var p = new PixelPoint(saved.X, saved.Y);
+                    (int cw, int ch) = canvas.CellPixels;
+                    if (!visibleFences.Any(f => IconLayout.CenterInside(f, p, cw, ch)))
+                    {
+                        placed[id] = p;
+                        occupied.Add(p);
+                        continue;
+                    }
+                }
+
+                needSpot.Add(id);
+            }
+
+            // 2. 其他的找空位：有指定位置（放下、貼上、右鍵新增）就放在附近，否則從左上角往下找
+            foreach (string id in needSpot)
+            {
+                PixelPoint? target = _pendingPlacements.TryGetValue(id, out PixelPoint t) ? t : null;
+                PixelPoint spot = FindSpot(target, allFences, occupied);
+                placed[id] = spot;
+                occupied.Add(spot);
+            }
+        }
+
+        _pendingPlacements.Clear();
+        foreach ((string id, PixelPoint p) in placed)
+            Config.DesktopPositions[id] = new SavedPoint { X = p.X, Y = p.Y };
+
+        foreach (DesktopCanvas canvas in _canvases)
+        {
+            var mine = placed.Where(kv => CanvasAt(kv.Value) == canvas).Select(kv => (kv.Key, kv.Value)).ToList();
+            canvas.SetItems(mine, Config.DesktopIconSize);
+        }
+    }
+
+    /// <summary>自動排列的順序：系統圖示、資料夾、檔案，各自依名稱。</summary>
+    private static IEnumerable<string> SortForArrange(IEnumerable<string> ids)
+    {
+        var comparer = StringComparer.CurrentCultureIgnoreCase;
+        return ids
+            .OrderBy(id => ShellItems.IsSystemItem(id) ? 0 : Directory.Exists(id) ? 1 : 2)
+            .ThenBy(id => ShellItems.IsSystemItem(id) ? "" : Path.GetFileName(id), comparer);
+    }
+
+    /// <summary>找一個空格子：有 target 就找離它最近的，否則照 Windows 的習慣從主螢幕左上角往下找。</summary>
+    private PixelPoint FindSpot(PixelPoint? target, List<PixelRect> fences, List<PixelPoint> occupied)
+    {
+        DesktopCanvas first = target is { } t0 ? CanvasAt(t0) ?? _canvases[0] : _canvases[0];
+        foreach (DesktopCanvas canvas in _canvases.OrderBy(c => c == first ? 0 : 1))
+        {
+            (int cw, int ch) = canvas.CellPixels;
+            PixelPoint? spot = target is { } t && canvas == first
+                ? DesktopGrid.NearestFreeCell(new PixelPoint(t.X - cw / 2, t.Y - ch / 3), canvas.WorkArea, fences, occupied, cw, ch)
+                : IconLayout.FindFreeSpot(canvas.WorkArea, fences, occupied, cw, ch);
+            if (spot is { } found)
+                return found;
+        }
+
+        // 整個桌面都滿了：疊在左上角
+        return new PixelPoint(_canvases[0].WorkArea.X, _canvases[0].WorkArea.Y);
+    }
+
+    private DesktopCanvas? CanvasAt(PixelPoint p)
+    {
+        foreach (DesktopCanvas canvas in _canvases)
+        {
+            (int cw, int ch) = canvas.CellPixels;
+            if (IconLayout.CenterInside(canvas.WorkArea, p, cw, ch))
+                return canvas;
+        }
+
+        return null;
+    }
+
+    private DesktopCanvas? CanvasOf(string id) => _canvases.FirstOrDefault(c => c.PositionOf(id) != null);
+
+    private static PixelPoint? GetCursorPixel() =>
+        NativeMethods.GetCursorPos(out NativeMethods.POINT pt) ? new PixelPoint(pt.x, pt.y) : null;
+
+    /// <summary>
+    /// 把項目放到桌面上的某個位置：從桌面拖來的（origin 有值）整組一起平移；從分區拖來的會移出分區。
+    /// </summary>
+    public void PlaceOnDesktop(IReadOnlyList<string> ids, PixelPoint point, PixelPoint? origin)
+    {
+        if (origin is { } from)
+        {
+            int dx = point.X - from.X, dy = point.Y - from.Y;
+            var moving = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
+            var occupied = Config.DesktopPositions.Where(kv => !moving.Contains(kv.Key)).Select(kv => new PixelPoint(kv.Value.X, kv.Value.Y)).ToList();
+            foreach (string id in ids)
+            {
+                if (!Config.DesktopPositions.TryGetValue(id, out SavedPoint? old))
+                    continue;
+
+                var target = new PixelPoint(old.X + dx, old.Y + dy);
+                DesktopCanvas canvas = CanvasAt(target) ?? CanvasAt(point) ?? _canvases[0];
+                (int cw, int ch) = canvas.CellPixels;
+                PixelPoint spot = target;
+                if (Config.SnapToGrid)
+                {
+                    spot = DesktopGrid.Snap(target, canvas.WorkArea, cw, ch);
+                    if (!DesktopGrid.IsFree(spot, Array.Empty<PixelRect>(), occupied, cw, ch))
+                        spot = DesktopGrid.NearestFreeCell(spot, canvas.WorkArea, Array.Empty<PixelRect>(), occupied, cw, ch) ?? spot;
+                }
+                else
+                {
+                    spot = new PixelPoint(
+                        Math.Clamp(target.X, canvas.WorkArea.X, canvas.WorkArea.Right - cw),
+                        Math.Clamp(target.Y, canvas.WorkArea.Y, canvas.WorkArea.Bottom - ch));
+                }
+
+                Config.DesktopPositions[id] = new SavedPoint { X = spot.X, Y = spot.Y };
+                occupied.Add(spot);
+            }
+
+            if (Config.AutoArrange)
+                Toast.ShowMessage("「自動排列」開著，圖示會照名稱排好（可以在設定裡關掉）");
+        }
+        else
+        {
+            // 從分區拖出來：桌面上的檔案回到桌面，放在放開的地方
+            string undo = SerializeFences();
+            foreach (string id in ids)
+            {
+                Config.DesktopPositions.Remove(id);
+                _pendingPlacements[id] = point;
+            }
+
+            int before = CountFenced();
+            RemoveFromAllFencesQuiet(ids);
+            if (CountFenced() != before)
+                PushUndo(ids.Count == 1 ? $"「{FenceItem.Create(ids[0]).DisplayName}」已放回桌面" : $"{ids.Count} 個項目已放回桌面", undo);
+        }
+
+        RefreshDesktopNow(enumerate: false);
+        CanvasAt(point)?.Select(ids, focus: true);
+        RequestSave();
+    }
+
+    private int CountFenced() => Config.Fences.Sum(f => f.AllItemLists().Sum(l => l.Count));
+
+    private void RemoveFromAllFencesQuiet(IReadOnlyCollection<string> paths)
+    {
+        foreach (FenceWindow window in _windows)
+        {
+            int removed = 0;
+            foreach (List<string> items in window.Config.AllItemLists())
+                removed += items.RemoveAll(p => paths.Any(path => PathEquals(p, path)));
+            if (removed > 0)
+                window.ReloadItems();
+        }
+    }
+
+    /// <summary>移出分區、放回桌面上的空位（分區選單「放回桌面」）。</summary>
+    public void ReturnToDesktop(IReadOnlyCollection<string> paths)
+    {
+        if (paths.Count == 0)
+            return;
+
+        PushUndo(paths.Count == 1 ? $"「{FenceItem.Create(paths.First()).DisplayName}」已放回桌面" : $"{paths.Count} 個項目已放回桌面");
+        RemoveFromAllFencesQuiet(paths);
+        RefreshDesktopNow(enumerate: false);
+        RequestSave();
+    }
+
+    /// <summary>拖曳中讓桌面圖示層整片都接得到東西。</summary>
+    public void SetDesktopDropMode(bool on)
+    {
+        foreach (DesktopCanvas canvas in _canvases)
+            canvas.SetDropMode(on);
+    }
+
+    internal void OnCanvasActivated(DesktopCanvas active)
+    {
+        foreach (DesktopCanvas canvas in _canvases.Where(c => c != active))
+            canvas.ClearSelection();
+    }
+
+    /// <summary>刪除（進資源回收筒），刪掉的東西也從分區拿掉。</summary>
+    public void DeleteItems(IReadOnlyCollection<string> ids, bool permanently)
+    {
+        if (!FileActions.Delete(ids, permanently))
+            return;
+
+        RemoveFromAllFences(ids.Where(id => !File.Exists(id) && !Directory.Exists(id)).ToList());
+        RefreshDesktop(enumerate: true);
+    }
+
+    /// <summary>把項目搬進資料夾（放在桌面上的資料夾圖示上）。</summary>
+    public void MoveItemsInto(IReadOnlyCollection<string> ids, string folder)
+    {
+        List<string> files = FileActions.RealFiles(ids);
+        if (files.Count == 0)
+            return;
+
+        FileActions.Move(files, folder);
+        RemoveFromAllFences(files.Where(f => !File.Exists(f) && !Directory.Exists(f)).ToList());
+        RefreshDesktop(enumerate: true);
+    }
+
+    /// <summary>從檔案總管拖來的檔案：複製 / 搬到資料夾；放到桌面時，新的東西放在 near 附近。</summary>
+    public void TransferInto(IReadOnlyCollection<string> files, string folder, bool move, PixelPoint? near)
+    {
+        List<string> created = move ? FileActions.Move(files, folder) : FileActions.Copy(files, folder);
+        if (near is { } point)
+        {
+            foreach (string path in created)
+                _pendingPlacements[path] = point;
+        }
+
+        RemoveFromAllFences(files.Where(f => !File.Exists(f) && !Directory.Exists(f)).ToList());
+        RefreshDesktopNow(enumerate: true);
+    }
+
+    /// <summary>Ctrl+V 貼到桌面，新的東西放在 near 附近。</summary>
+    public void PasteOnDesktop(PixelPoint near)
+    {
+        List<string> created = FileActions.PasteInto(UserDesktop);
+        foreach (string path in created)
+            _pendingPlacements[path] = near;
+        RefreshDesktopNow(enumerate: true);
+        if (created.Count > 0)
+            CanvasAt(near)?.Select(created, focus: true);
+    }
+
+    public void PasteInto(string folder)
+    {
+        FileActions.PasteInto(folder);
+        RefreshDesktop(enumerate: true);
+    }
+
+    /// <summary>在分區裡 Ctrl+V：檔案貼到桌面資料夾，然後放進這個分區。</summary>
+    public void PasteIntoFence(FenceWindow window)
+    {
+        List<string> created = FileActions.PasteInto(UserDesktop);
+        if (created.Count == 0)
+            return;
+
+        AddToFence(created, window.Config.Id);
+    }
+
+    public void NewFolderOnDesktop(PixelPoint near)
+    {
+        if (FileActions.CreateNewFolder(UserDesktop) is not { } path)
+            return;
+
+        _pendingPlacements[path] = near;
+        _renameAfterRefresh = path;
+        RefreshDesktopNow(enumerate: true);
+    }
+
+    public void RenameItem(string id, string newName)
+    {
+        try
+        {
+            string newPath = ShellItems.Rename(id, newName);
+            if (PathEquals(newPath, id) && newPath == id)
+                return;
+
+            ReplacePath(id, newPath);
+            RefreshDesktopNow(enumerate: true);
+            CanvasOf(newPath)?.Select(new[] { newPath }, focus: true);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("無法重新命名：" + ex.Message, "MyFences", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>目前頁面上可以放東西的分區（右鍵「放進分區」用）。</summary>
+    public List<(string Id, string Name)> FenceTargets() =>
+        _windows.Where(w => w.Config.Kind == FenceKind.Standard && w.Config.Page == Config.CurrentPage)
+            .Select(w => (w.Config.Id, w.Config.Name))
+            .ToList();
+
+    public void AddToFence(IReadOnlyCollection<string> ids, string fenceId)
+    {
+        FenceWindow? window = _windows.FirstOrDefault(w => w.Config.Id == fenceId);
+        if (window == null)
+            return;
+
+        foreach (string id in ids)
+        {
+            RemoveFromOtherFences(id, window);
+            foreach (List<string> other in window.Config.AllItemLists())
+                other.RemoveAll(p => PathEquals(p, id));
+            window.Config.CurrentItems.Add(id);
+        }
+
+        window.ReloadItems();
+        RefreshDesktopNow(enumerate: false);
+        RequestSave();
+    }
+
+    public void SetDesktopIconSize(double size)
+    {
+        Config.DesktopIconSize = size;
+        RefreshDesktopNow(enumerate: false);
+        RequestSave();
+    }
+
+    public void SetAutoArrange(bool enabled)
+    {
+        Config.AutoArrange = enabled;
+        RefreshDesktopNow(enumerate: false);
+        RequestSave();
+    }
+
+    public void SetSnapToGrid(bool enabled)
+    {
+        Config.SnapToGrid = enabled;
+        RequestSave();
+    }
+
+    /// <summary>依名稱排列一次（不打開自動排列）。</summary>
+    public void ArrangeDesktopByName()
+    {
+        Config.DesktopPositions.Clear();
+        foreach (string id in SortForArrange(LooseItems()))
+            _pendingPlacements.Remove(id);
+        bool auto = Config.AutoArrange;
+        Config.AutoArrange = true;
+        RefreshDesktopNow(enumerate: true);
+        Config.AutoArrange = auto;
+        RequestSave();
+    }
+
+    // ───────────── 接管 Windows 的桌面圖示 ─────────────
+
+    /// <summary>舊版本用「隱藏屬性」藏過的檔案，全部還原（只為了升級）。</summary>
+    private void UnhideLegacyHiddenFiles()
+    {
+        if (Config.HiddenDesktopItems.Count == 0)
+            return;
+
+        foreach (string path in Config.HiddenDesktopItems)
+            DesktopHelper.TrySetHidden(path, false);
+        Config.HiddenDesktopItems.Clear();
+        ConfigStore.Save(Config);
+    }
+
+    /// <summary>關掉 Windows 的「顯示桌面圖示」，改由 MyFences 畫。原本的狀態先記下來（當掉重開也記得）。</summary>
+    private void TakeOverDesktopIcons()
+    {
+        if (Config.ExplorerIconsWereVisible == null)
+        {
+            Config.ExplorerIconsWereVisible = DesktopHelper.AreDesktopIconsVisible();
+            ConfigStore.Save(Config);
+        }
+
+        DesktopHelper.SetDesktopIconsVisible(false);
+    }
+
+    private void RestoreExplorerIcons()
+    {
+        if (Config.ExplorerIconsWereVisible is not { } wasVisible)
+            return;
+
+        try
+        {
+            if (wasVisible)
+                DesktopHelper.SetDesktopIconsVisible(true);
+            Config.ExplorerIconsWereVisible = null;
+            ConfigStore.Save(Config);
+        }
+        catch (Exception)
+        {
+            // 結束中，盡力就好；下次啟動還記得要還原
+        }
+    }
+
+    // ───────────── 桌面上的滑鼠 ─────────────
+
+    private void OnDesktopPress(PixelPoint point)
+    {
+        // 點在桌面空白處：取消選取（跟 Windows 一樣）
+        foreach (DesktopCanvas canvas in _canvases)
+            canvas.ClearSelection();
+    }
+
+    private void OnDesktopBoxSelect(PixelRect? rect)
+    {
+        foreach (DesktopCanvas canvas in _canvases)
+            canvas.BoxSelect(rect);
+    }
+
+    private void OnDesktopRightClick(PixelPoint point)
+    {
+        _lastRightClick = point;
+        _lastRightClickTime = DateTime.Now;
+    }
+
+    // ───────────── 各螢幕的桌面圖示層 ─────────────
+
+    /// <summary>每個螢幕一層；螢幕變了就調整（第一層一直留著，分區都黏在它上面）。</summary>
+    private void UpdateCanvases()
+    {
+        for (int i = 0; i < _screens.Count; i++)
+        {
+            if (i >= _canvases.Count)
+            {
+                DesktopCanvas canvas = CreateCanvas();
+                canvas.OwnerHandle = i == 0 ? IntPtr.Zero : _canvases[i - 1].Handle;
+                _canvases.Add(canvas);
+            }
+
+            _canvases[i].PlaceOn(_screens[i].WorkArea);
+        }
+
+        while (_canvases.Count > Math.Max(1, _screens.Count))
+        {
+            DesktopCanvas extra = _canvases[^1];
+            _canvases.RemoveAt(_canvases.Count - 1);
+            extra.CloseIntentionally();
+        }
+
+        for (int i = 0; i < _canvases.Count; i++)
+        {
+            if (!_fencesHidden && !_canvases[i].IsVisible)
+            {
+                _canvases[i].Show();
+                _canvases[i].PlaceOn(_screens[Math.Min(i, _screens.Count - 1)].WorkArea);
+            }
+        }
+    }
+
+    private DesktopCanvas CreateCanvas()
+    {
+        var canvas = new DesktopCanvas();
+        canvas.Closed += (_, _) =>
+        {
+            if (canvas.IsClosingIntentionally || IsExiting || _canvasRebuildPending)
+                return;
+
+            // 例如 Explorer 重新啟動時被一起關掉：等這一串關閉結束後，整組重建（分區會自己重開、黏回來）
+            _canvasRebuildPending = true;
+            Dispatcher.InvokeAsync(RebuildCanvases);
+        };
+        return canvas;
+    }
+
+    private void RebuildCanvases()
+    {
+        _canvasRebuildPending = false;
+        foreach (DesktopCanvas canvas in _canvases.Where(c => !c.IsClosed).ToList())
+            canvas.CloseIntentionally();
+        _canvases.Clear();
+        UpdateCanvases();
+        foreach (FenceWindow window in _windows.ToList())
+            window.AttachToDesktop();
+        _pager?.AttachToDesktop();
+        RefreshDesktop(enumerate: true);
     }
 
     private void OnDesktopDoubleClick()
@@ -623,7 +1260,16 @@ public partial class App : Application
         if (rect.Width < MinDrawWidth || rect.Height < MinDrawHeight)
             return;
 
-        CreateFence(FenceKind.Standard, rect);
+        // 框住的桌面圖示直接放進新分區（跟 Fences 一樣）
+        List<string> inside = new();
+        foreach (DesktopCanvas canvas in _canvases)
+        {
+            (int cw, int ch) = canvas.CellPixels;
+            inside.AddRange(canvas.Ids.Where(id => canvas.PositionOf(id) is { } p && IconLayout.CenterInside(rect, p, cw, ch)));
+        }
+
+        if (CreateFence(FenceKind.Standard, rect) is { } window && inside.Count > 0)
+            AddToFence(inside, window.Config.Id);
     }
 
     private void TryEnsureDailySnapshot()
@@ -642,6 +1288,7 @@ public partial class App : Application
 
     private static List<ScreenInfo> GetScreens() =>
         System.Windows.Forms.Screen.AllScreens
+            .OrderByDescending(s => s.Primary) // 主螢幕放第一個（桌面圖示預設從主螢幕排起）
             .Select(s => new ScreenInfo(
                 s.DeviceName,
                 new PixelRect(s.WorkingArea.X, s.WorkingArea.Y, s.WorkingArea.Width, s.WorkingArea.Height),
@@ -661,11 +1308,16 @@ public partial class App : Application
     private void HandleDisplayChange()
     {
         List<ScreenInfo> newScreens = GetScreens();
-        if (LayoutMath.ProfileKey(newScreens) == LayoutMath.ProfileKey(_screens))
+        if (LayoutMath.ProfileKey(newScreens) == LayoutMath.ProfileKey(_screens) &&
+            newScreens.Select(s => s.WorkArea).SequenceEqual(_screens.Select(s => s.WorkArea)))
+        {
             return;
+        }
 
         RemapForScreens(_screens, newScreens);
         _screens = newScreens;
+        UpdateCanvases();
+        RefreshDesktop(enumerate: false);
         Config.LastScreens = newScreens;
         RecordMonitorLayout();
         RequestSave();
@@ -741,6 +1393,8 @@ public partial class App : Application
             return;
 
         _progman = progman;
+        foreach (DesktopCanvas canvas in _canvases)
+            canvas.AttachToDesktop();
         foreach (FenceWindow window in _windows)
             window.AttachToDesktop();
         _pager?.AttachToDesktop();

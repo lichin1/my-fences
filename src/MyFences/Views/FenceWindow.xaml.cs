@@ -130,6 +130,17 @@ public partial class FenceWindow : Window
         return new PixelRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
     }
 
+    /// <summary>桌面圖示要避開的範圍：收合中的分區只算標題列（滑鼠移上去暫時展開時不算）。</summary>
+    public PixelRect? GetLayoutBounds()
+    {
+        if (GetPixelBounds() is not { } r)
+            return null;
+        if (!Config.RolledUp)
+            return r;
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleY;
+        return r with { Height = (int)Math.Round(RolledUpHeight * (scale > 0 ? scale : 1)) };
+    }
+
     /// <summary>新分區放到螢幕像素範圍（高度依這台螢幕的 DPI 換成 WPF 單位）。</summary>
     public void PlaceAtPixels(PixelRect rect)
     {
@@ -191,7 +202,7 @@ public partial class FenceWindow : Window
         TitleText.Text = Config.Name;
         IconSize = Config.IconSize;
         CellWidth = Config.IconSize + 36;
-        EmptyHint.Text = IsStandard ? "把桌面上的檔案拖進來" : "資料夾是空的";
+        EmptyHint.Text = IsStandard ? "把桌面上的圖示拖進來" : "資料夾是空的";
         AddTabButton.Visibility = IsStandard ? Visibility.Visible : Visibility.Collapsed;
         RollUpButton.Content = Config.RolledUp ? "\uE70D" : "\uE70E";
         RollUpButton.ToolTip = Config.RolledUp ? "展開" : "收合";
@@ -1041,25 +1052,7 @@ public partial class FenceWindow : Window
         return (element as ListBoxItem)?.DataContext as FenceItem;
     }
 
-    private static void OpenItem(FenceItem item)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo(item.FullPath) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"無法開啟「{item.DisplayName}」：\n{ex.Message}", "MyFences", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private static void ShowInExplorer(FenceItem item)
-    {
-        if (item.Exists)
-            Process.Start("explorer.exe", $"/select,\"{item.FullPath}\"");
-        else if (Path.GetDirectoryName(item.FullPath) is { } dir && Directory.Exists(dir))
-            Process.Start("explorer.exe", $"\"{dir}\"");
-    }
+    private static void OpenItem(FenceItem item) => FileActions.Open(item.FullPath);
 
     private void OnItemsDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -1069,7 +1062,7 @@ public partial class FenceWindow : Window
 
     private List<FenceItem> SelectedItems() => _items.Where(i => ItemsList.SelectedItems.Contains(i)).ToList();
 
-    /// <summary>鍵盤：Ctrl+Z 復原、Ctrl+A 全選、Delete 移出、Enter 開啟。</summary>
+    /// <summary>鍵盤：跟 Windows 桌面一樣（Enter 開啟、Delete 刪除、Ctrl+C / X / V），另外 Ctrl+Z 復原、F2 改分區名稱。</summary>
     private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (TitleEditor.IsKeyboardFocusWithin)
@@ -1094,15 +1087,31 @@ public partial class FenceWindow : Window
             ItemsList.SelectAll();
             e.Handled = true;
         }
-        else if (e.Key == Key.Delete && IsStandard && SelectedItems() is { Count: > 0 } selected)
+        else if (e.Key == Key.Delete && SelectedItems() is { Count: > 0 } selected)
         {
-            RemoveItems(selected.Select(i => i.FullPath).ToList());
+            App.Current.DeleteItems(selected.Select(i => i.FullPath).ToList(), permanently: (Keyboard.Modifiers & ModifierKeys.Shift) != 0);
             e.Handled = true;
         }
-        else if (e.Key == Key.Enter && SelectedItems() is { Count: > 0 } toOpen)
+        else if (ctrl && (e.Key == Key.C || e.Key == Key.X) && SelectedItems() is { Count: > 0 } toCopy)
         {
-            foreach (FenceItem item in toOpen.Take(10))
-                OpenItem(item);
+            FileActions.CopyToClipboard(toCopy.Select(i => i.FullPath), cut: e.Key == Key.X);
+            e.Handled = true;
+        }
+        else if (ctrl && e.Key == Key.V)
+        {
+            if (IsStandard)
+                App.Current.PasteIntoFence(this);
+            else if (Config.FolderPath is { } folder)
+                App.Current.PasteInto(folder);
+            e.Handled = true;
+        }
+        else if ((e.Key == Key.Enter || e.Key == Key.System && e.SystemKey == Key.Enter) && SelectedItems() is { Count: > 0 } toOpen)
+        {
+            if ((Keyboard.Modifiers & ModifierKeys.Alt) != 0)
+                FileActions.ShowProperties(toOpen[0].FullPath);
+            else
+                foreach (FenceItem item in toOpen.Take(10))
+                    OpenItem(item);
             e.Handled = true;
         }
     }
@@ -1269,19 +1278,24 @@ public partial class FenceWindow : Window
         };
         ItemsList.GiveFeedback += feedback;
         DragDropEffects result;
+        App.Current.SetDesktopDropMode(true); // 放在桌面任何地方都接得到
         try
         {
             result = DragDrop.DoDragDrop(ItemsList, data, DragDropEffects.Move);
         }
         finally
         {
+            App.Current.SetDesktopDropMode(false);
             ItemsList.GiveFeedback -= feedback;
             CursorHint.HideHint();
         }
 
-        // 沒有被任何分區接住、而且放在桌面上 = 拿出分區（桌面圖示會重新出現）
-        if (result == DragDropEffects.None && DesktopHelper.IsCursorOverDesktop())
-            RemoveItems(paths);
+        // 沒有被任何分區接住、而且放在桌面上 = 拿出分區，放在放開的地方
+        if (result == DragDropEffects.None && DesktopHelper.IsCursorOverDesktop() &&
+            GetCursorPos(out POINT cursor))
+        {
+            App.Current.PlaceOnDesktop(paths, new PixelPoint(cursor.x, cursor.y), origin: null);
+        }
     }
 
     /// <summary>拖進來的路徑：從其他分區拖來的（自己的格式）或從桌面 / 檔案總管拖來的（FileDrop）。</summary>
@@ -1425,6 +1439,7 @@ public partial class FenceWindow : Window
         // 剛放進來的項目保持選取，方便接著再拖去別的地方
         foreach (FenceItem item in _items.Where(i => files.Any(f => App.PathEquals(f, i.FullPath))))
             ItemsList.SelectedItems.Add(item);
+        App.Current.RefreshDesktop(enumerate: false); // 從桌面拿進來的圖示，桌面上就不再顯示
         App.Current.RequestSave();
     }
 
@@ -1474,13 +1489,43 @@ public partial class FenceWindow : Window
         if (!selected.Contains(item))
             selected = new List<FenceItem> { item };
 
-        menu.Items.Add(MakeItem("開啟", () => OpenItem(item), bold: true));
-        menu.Items.Add(MakeItem("開啟檔案位置", () => ShowInExplorer(item)));
+        List<string> paths = selected.Select(i => i.FullPath).ToList();
+        bool hasFiles = FileActions.RealFiles(paths).Count > 0;
+        string id = item.FullPath;
+
+        // 動作都交給 Windows 做，跟在桌面 / 檔案總管裡一樣
+        menu.Items.Add(MakeItem("開啟", () => selected.Take(10).ToList().ForEach(OpenItem), bold: true));
+        if (selected.Count == 1 && FileActions.CanOpenWith(id))
+            menu.Items.Add(MakeItem("開啟方式…", () => FileActions.OpenWith(id)));
+        if (!ShellItems.IsSystemItem(id))
+            menu.Items.Add(MakeItem("在檔案總管中顯示", () => FileActions.ShowInExplorer(id)));
+        if (id == ShellItems.RecycleBin)
+            menu.Items.Add(MakeItem("清理資源回收筒", FileActions.EmptyRecycleBin));
+
+        if (hasFiles)
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(MakeItem("剪下", () => FileActions.CopyToClipboard(paths, cut: true), gesture: "Ctrl+X"));
+            menu.Items.Add(MakeItem("複製", () => FileActions.CopyToClipboard(paths, cut: false), gesture: "Ctrl+C"));
+        }
+
         if (IsStandard)
         {
             menu.Items.Add(new Separator());
-            string label = selected.Count == 1 ? "移出分區（放回桌面）" : $"把 {selected.Count} 個項目移出分區";
-            menu.Items.Add(MakeItem(label, () => RemoveItems(selected.Select(i => i.FullPath).ToList())));
+            string label = selected.Count == 1 ? "放回桌面" : $"把 {selected.Count} 個項目放回桌面";
+            menu.Items.Add(MakeItem(label, () => App.Current.ReturnToDesktop(paths)));
+        }
+
+        if (hasFiles)
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(MakeItem("刪除", () => App.Current.DeleteItems(paths, permanently: false), gesture: "Delete"));
+        }
+
+        if (item.Exists)
+        {
+            menu.Items.Add(new Separator());
+            menu.Items.Add(MakeItem("內容", () => FileActions.ShowProperties(id), gesture: "Alt+Enter"));
         }
 
         return menu;
@@ -1519,9 +1564,10 @@ public partial class FenceWindow : Window
         return menu;
     }
 
-    private static MenuItem MakeItem(string header, Action? onClick, IList<object>? children = null, bool bold = false, bool isChecked = false)
+    private static MenuItem MakeItem(
+        string header, Action? onClick, IList<object>? children = null, bool bold = false, bool isChecked = false, string? gesture = null)
     {
-        var item = new MenuItem { Header = header, IsChecked = isChecked };
+        var item = new MenuItem { Header = header, IsChecked = isChecked, InputGestureText = gesture ?? "" };
         if (bold)
             item.FontWeight = FontWeights.Bold;
         if (onClick != null)
@@ -1540,21 +1586,6 @@ public partial class FenceWindow : Window
     }
 
     // ───────────── 動作 ─────────────
-
-    /// <summary>移出分區（檔案不會刪除，桌面上的圖示會重新出現），可以復原。</summary>
-    private void RemoveItems(IReadOnlyCollection<string> paths)
-    {
-        if (paths.Count == 0)
-            return;
-
-        App.Current.PushUndo(paths.Count == 1
-            ? $"「{FenceItem.Create(paths.First()).DisplayName}」已放回桌面"
-            : $"{paths.Count} 個項目已放回桌面");
-        foreach (List<string> items in Config.AllItemLists())
-            items.RemoveAll(p => paths.Any(path => App.PathEquals(p, path)));
-        ReloadItems();
-        App.Current.RequestSave();
-    }
 
     private void SetColor(string color)
     {

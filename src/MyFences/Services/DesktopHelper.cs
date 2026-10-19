@@ -12,10 +12,26 @@ internal static class DesktopHelper
     public static IntPtr GetProgman() => FindWindow("Progman", null);
 
     /// <summary>
-    /// 把視窗的擁有者設成 Progman（桌面）。這樣按 Win+D「顯示桌面」時分區不會被縮小，
+    /// 分區要黏在哪個視窗上面：有桌面圖示層（MyFences 畫的桌面）就黏在它上面，
+    /// 這樣分區一定蓋在桌面圖示之上；還沒有的話直接黏在 Progman。
+    /// </summary>
+    public static Func<IntPtr>? OwnerProvider { get; set; }
+
+    /// <summary>
+    /// 把視窗的擁有者設成桌面。這樣按 Win+D「顯示桌面」時分區不會被縮小，
     /// 而且分區永遠在一般視窗下方。
     /// </summary>
     public static void GlueToDesktop(IntPtr hwnd)
+    {
+        IntPtr owner = OwnerProvider?.Invoke() ?? IntPtr.Zero;
+        if (owner == IntPtr.Zero || owner == hwnd || !IsWindow(owner))
+            owner = GetProgman();
+        if (owner != IntPtr.Zero)
+            SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, owner);
+    }
+
+    /// <summary>桌面圖示層自己：直接黏在 Progman。</summary>
+    public static void GlueToProgman(IntPtr hwnd)
     {
         IntPtr progman = GetProgman();
         if (progman != IntPtr.Zero)
@@ -48,17 +64,8 @@ internal static class DesktopHelper
             SendMessage(defView, WM_COMMAND, new IntPtr(ToggleDesktopIconsCommand), IntPtr.Zero);
     }
 
-    public static bool IsHidden(string path)
-    {
-        try
-        {
-            return (File.GetAttributes(path) & FileAttributes.Hidden) != 0;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
+    /// <summary>桌面圖示的 ListView 現在看不看得到（被「顯示桌面圖示」關掉時看不到）。</summary>
+    public static bool IsListViewVisible(IntPtr listView) => listView != IntPtr.Zero && IsWindowVisible(listView);
 
     /// <summary>設定 / 取消隱藏屬性（檔案和資料夾都可以）。失敗回傳 false。</summary>
     public static bool TrySetHidden(string path, bool hidden)
